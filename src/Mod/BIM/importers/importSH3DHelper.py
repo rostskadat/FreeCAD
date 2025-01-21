@@ -86,7 +86,7 @@ Z_NORM = App.Vector(0, 0, 1)
 #       "Sliding 4-pane", "Awning"]
 # unzip -p all-windows.sh3d Home.xml | \
 #   grep 'catalogId=' | \
-#   sed -e 's/.*catalogId=//;s/ name=.*/: ("Open 2-pane","Window"),/' | sort -u
+#   sed -e 's/.*catalogId=//;s/ name=.*/: ("Fixed","Window"),/' | sort -u
 # unzip -p all-doors.sh3d Home.xml | \
 #   grep 'catalogId=' | \
 #   sed -e 's/.*catalogId=//;s/ name=.*/: ("Simple door","Door")/' | sort -u
@@ -115,36 +115,36 @@ DOOR_MODELS = {
     'Scopia#glass_door': ("Glass door","Door"),
     'Scopia#puerta': ("Simple door","Door"),
 
-    'eTeks#doubleFrenchWindow126x200': ("Open 2-pane","Window"),
-    'eTeks#doubleHungWindow80x122': ("Open 2-pane","Window"),
-    'eTeks#doubleOutwardOpeningWindow': ("Open 2-pane","Window"),
-    'eTeks#doubleWindow126x123': ("Open 2-pane","Window"),
-    'eTeks#doubleWindow126x163': ("Open 2-pane","Window"),
-    'eTeks#fixedTriangleWindow85x85': ("Open 2-pane","Window"),
-    'eTeks#fixedWindow85x123': ("Open 2-pane","Window"),
-    'eTeks#frenchWindow85x200': ("Open 2-pane","Window"),
-    'eTeks#halfRoundWindow': ("Open 2-pane","Window"),
-    'eTeks#roundWindow': ("Open 2-pane","Window"),
-    'eTeks#sliderWindow126x200': ("Open 2-pane","Window"),
-    'eTeks#window85x123': ("Open 2-pane","Window"),
-    'eTeks#window85x163': ("Open 2-pane","Window"),
-    'Kator Legaz#window-01': ("Open 2-pane","Window"),
-    'Kator Legaz#window-08-02': ("Open 2-pane","Window"),
-    'Kator Legaz#window-08': ("Open 2-pane","Window"),
-    'Scopia#turn-window': ("Open 2-pane","Window"),
-    'Scopia#window_2x1_medium_with_large_pane': ("Open 2-pane","Window"),
-    'Scopia#window_2x1_with_sliders': ("Open 2-pane","Window"),
-    'Scopia#window_2x3_arched': ("Open 2-pane","Window"),
-    'Scopia#window_2x3': ("Open 2-pane","Window"),
-    'Scopia#window_2x3_regular': ("Open 2-pane","Window"),
-    'Scopia#window_2x4_arched': ("Open 2-pane","Window"),
-    'Scopia#window_2x4': ("Open 2-pane","Window"),
-    'Scopia#window_2x6': ("Open 2-pane","Window"),
-    'Scopia#window_3x1': ("Open 2-pane","Window"),
-    'Scopia#window_4x1': ("Open 2-pane","Window"),
-    'Scopia#window_4x3_arched': ("Open 2-pane","Window"),
-    'Scopia#window_4x3': ("Open 2-pane","Window"),
-    'Scopia#window_4x5': ("Open 2-pane","Window"),
+    'eTeks#doubleFrenchWindow126x200': ("Fixed","Window"),
+    'eTeks#doubleHungWindow80x122': ("Fixed","Window"),
+    'eTeks#doubleOutwardOpeningWindow': ("Fixed","Window"),
+    'eTeks#doubleWindow126x123': ("Fixed","Window"),
+    'eTeks#doubleWindow126x163': ("Fixed","Window"),
+    'eTeks#fixedTriangleWindow85x85': ("Fixed","Window"),
+    'eTeks#fixedWindow85x123': ("Fixed","Window"),
+    'eTeks#frenchWindow85x200': ("Fixed","Window"),
+    'eTeks#halfRoundWindow': ("Fixed","Window"),
+    'eTeks#roundWindow': ("Fixed","Window"),
+    'eTeks#sliderWindow126x200': ("Fixed","Window"),
+    'eTeks#window85x123': ("Fixed","Window"),
+    'eTeks#window85x163': ("Fixed","Window"),
+    'Kator Legaz#window-01': ("Fixed","Window"),
+    'Kator Legaz#window-08-02': ("Fixed","Window"),
+    'Kator Legaz#window-08': ("Fixed","Window"),
+    'Scopia#turn-window': ("Fixed","Window"),
+    'Scopia#window_2x1_medium_with_large_pane': ("Fixed","Window"),
+    'Scopia#window_2x1_with_sliders': ("Fixed","Window"),
+    'Scopia#window_2x3_arched': ("Fixed","Window"),
+    'Scopia#window_2x3': ("Fixed","Window"),
+    'Scopia#window_2x3_regular': ("Fixed","Window"),
+    'Scopia#window_2x4_arched': ("Fixed","Window"),
+    'Scopia#window_2x4': ("Fixed","Window"),
+    'Scopia#window_2x6': ("Fixed","Window"),
+    'Scopia#window_3x1': ("Fixed","Window"),
+    'Scopia#window_4x1': ("Fixed","Window"),
+    'Scopia#window_4x3_arched': ("Fixed","Window"),
+    'Scopia#window_4x3': ("Fixed","Window"),
+    'Scopia#window_4x5': ("Fixed","Window"),
 
 }
 
@@ -181,6 +181,7 @@ class SH3DImporter:
         self.floors = {}
         self.walls = []
         self.space_upper_faces = []
+        self.facebinders = []
 
     def import_sh3d_from_string(self, home:str):
         """Import the SH3D Home from a String.
@@ -272,16 +273,17 @@ class SH3DImporter:
             for furniture_group in home.findall('furnitureGroup'):
                 self._import_elements(furniture_group, 'doorOrWindow', False)
             self._refresh()
-            group = App.ActiveDocument.Facebinders
-            for element in group.Group:
+            _msg(f"Updating Facebinders definitions. Please wait ...")
+            for facebinder in self.facebinders:
                 faces = []
                 new_sel_subshapes = []
-                for (sel_object, sel_subshapes) in element.Faces:
+                for (sel_object, sel_subshapes) in facebinder.Faces:
                     for sel_subshape in sel_subshapes:
                         sel_subshape = sel_subshape[1:] if sel_subshape.startswith('?') else sel_subshape
                         new_sel_subshapes.append(sel_subshape)
                     faces.append((sel_object, new_sel_subshapes))
-                element.Faces = faces
+                facebinder.Faces = faces
+            _msg(f"Updated Facebinders definitions.")
             self._refresh()
 
         # Importing <pieceOfFurniture> && <furnitureGroup> elements ...
@@ -395,7 +397,7 @@ class SH3DImporter:
             elif type_ == "App::PropertyInteger":
                 value = int(value.get(name, 0))
             elif type_ == "App::PropertyBool":
-                value = bool(value.get(name, True))
+                value = value.get(name, "true") == "true"
         if self.preferences["DEBUG"]:
             _log(f"Setting @{obj}.{name} = {value}")
         setattr(obj, name, value)
@@ -488,6 +490,9 @@ class SH3DImporter:
 
     def get_walls(self):
         return self.walls
+
+    def add_facebinder(self, facebinder):
+        self.facebinders.append(facebinder)
 
     def _create_groups(self):
         """Create FreeCAD Group for the different imported elements
@@ -922,13 +927,17 @@ class RoomHandler(BaseHandler):
         self.importer.fc_objects[slab.id] = slab
         self.importer.fc_objects[space.id] = space
 
+        # We then update the upper face of the slab in order to relate any 
+        # point above with a specific Arch::Space. The Arch::Space is then
+        # used to group slabs, furnitures, baseboards, etc
         upper_face = self._get_upper_face(slab.Shape.Faces)
         if not upper_face:
             _wrn(f"Couldn't find the upper face of slab {slab.Label} on level {floor.Label}!")
         else:
             self.importer.space_upper_faces.append((floor, space, upper_face))
 
-        slab.Visibility = True
+        slab.Visibility = True if slab.floorVisible else False
+        space.Visibility = True if slab.floorVisible else False
 
         floor.addObject(space)
 
@@ -994,7 +1003,7 @@ class WallHandler(BaseHandler):
         self._set_properties(wall, elm)
         wall.recompute(True)
 
-        self._create_facebinders(floor, wall, elm)
+        # self._create_facebinders(floor, wall, elm)
 
         if self.importer.preferences["IMPORT_FURNITURES"]:
             for baseboard in elm.findall('baseboard'):
@@ -1172,8 +1181,8 @@ class WallHandler(BaseHandler):
 
         # NOTE: the wall height is adjusted with the floor thickness
         # BUG: It should be adjusted for all floor except the last one.
-        height_start = height_start + floor.floorThickness
-        height_end = height_end + floor.floorThickness
+        height_start = height_start + floor.floorThickness -10
+        height_end = height_end + floor.floorThickness -10
 
         start = coord_sh2fc(App.Vector(x_start, y_start, z))
         end = coord_sh2fc(App.Vector(x_end, y_end, z))
@@ -1454,6 +1463,7 @@ class WallHandler(BaseHandler):
         left_side_shininess = elm.get('leftSideShininess', 0)
         set_shininess(left_facebinder, left_side_shininess)
         floor.getObject(floor.FacebinderGroupName).addObject(left_facebinder)
+        self.importer.add_facebinder(left_facebinder)
 
         right_facebinder = Draft.make_facebinder(( wall, ("Face4", ) ))
         right_facebinder.Extrusion = 1
@@ -1463,6 +1473,7 @@ class WallHandler(BaseHandler):
         right_side_shininess = elm.get('rightSideShininess', 0)
         set_shininess(right_facebinder, right_side_shininess)
         floor.getObject(floor.FacebinderGroupName).addObject(right_facebinder)
+        self.importer.add_facebinder(right_facebinder)
 
     def _import_baseboard(self, floor, wall, elm):
         """Creates and returns a Part::Extrusion from the imported_baseboard object
@@ -1696,6 +1707,8 @@ class DoorOrWindowHandler(BaseFurnitureHandler):
 
         corner = center.add(App.Vector(-width/2, -depth/2, -height/2))
 
+        # Then create a box that represent the BoundingBox of the windows
+        # to find out which wall contains the window.
         solid = Part.makeBox(width, depth, height)
         solid.rotate(solid.CenterOfMass, Z_NORM, math.degrees(ang_sh2fc(angle)))
         solid.translate(corner)
@@ -1706,8 +1719,15 @@ class DoorOrWindowHandler(BaseFurnitureHandler):
         if len(walls) == 0:
             _err(f"Missing wall for <doorOrWindow> {elm.get('id')}. Defaulting to width {DEFAULT_WALL_WIDTH} ...")
         else:
-            wall_width = walls[0].Width
-
+            # NOTE:
+            # The main host (the one defining the width of the door/window) is
+            # the one that contains the CenterOfMass of the windows, or maybe
+            # the one that has the same normal?
+            wall_width = float(walls[0].Width)
+            com = solid.CenterOfMass
+            for wall in walls:
+                if wall.Shape.isInside(com, 1, False):
+                    wall_width = float(wall.Width)
 
         center2corner = App.Vector(-width/2, -wall_width/2, 0)
         rotation = App.Rotation(Z_NORM, math.degrees(ang_sh2fc(angle)))
@@ -1730,13 +1750,14 @@ class DoorOrWindowHandler(BaseFurnitureHandler):
             (windowtype, ifc_type) = ('Simple door', 'Door')
 
         # See the https://wiki.freecad.org/Arch_Window for details about these values
-        h1 = 50
-        h2 = 50
-        h3 = 50
-        o1 = 40
-        w1 = float(wall_width)-o1 # make sure the door takes the whole wall (facebinder+baseboard)
-        w2 = 40
-        o2 = (w1-w2) / 2
+        # Only using Opening / Fixed / Simple Door
+        h1 = min(50,height*.025) # 2.5% of frame
+        h2 = h1
+        h3 = 0
+        w1 = wall_width
+        w2 = min(20.0,wall_width*.2) # 20% of width
+        o1 = 0
+        o2 = (wall_width-w2)/2
         window = Arch.makeWindowPreset(windowtype, width, height, h1, h2, h3, w1, w2, o1, o2, pl)
         window.IfcType = ifc_type
 
@@ -1852,7 +1873,7 @@ class FurnitureHandler(BaseFurnitureHandler):
                 App.Vector(rij[3], rij[4], rij[5]),
                 App.Vector(rij[6], rij[7], rij[8])
                 )
-            _msg(f"model_rotation is not yet implemented ...")
+            _msg(f"{elm.get('id')}: modelRotation is not yet implemented ...")
         transform.scale(width/bb.XLength, height/bb.YLength, depth/bb.ZLength)
         # NOTE: the model is facing up, thus y and z are inverted
         transform.rotateX(math.pi/2)
