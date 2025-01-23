@@ -148,6 +148,16 @@ DOOR_MODELS = {
 
 }
 
+
+ET_XPATH_LEVEL = 'level'
+ET_XPATH_ROOM = 'room'
+ET_XPATH_WALL = 'wall'
+ET_XPATH_DOOR_OR_WINDOWS = './/doorOrWindow'
+ET_XPATH_PIECE_OF_FURNITURE = './/pieceOfFurniture'
+ET_XPATH_LIGHT = 'light'
+ET_XPATH_OBSERVER_CAMERA = 'observerCamera'
+ET_XPATH_CAMERA = 'camera'
+
 class SH3DImporter:
     """The main class to import an SH3D file.
 
@@ -181,7 +191,7 @@ class SH3DImporter:
         self.floors = {}
         self.walls = []
         self.space_upper_faces = []
-        self.facebinders = []
+        self.delayed_decorations = []
 
     def import_sh3d_from_string(self, home:str):
         """Import the SH3D Home from a String.
@@ -244,8 +254,8 @@ class SH3DImporter:
 
         # Import the <level> element if any. If none are defined
         # create a default one.
-        if home.find(path='level') != None:
-            self._import_elements(home, 'level')
+        if home.find(ET_XPATH_LEVEL) != None:
+            self._import_elements(home, ET_XPATH_LEVEL)
         else:
             # Has the default floor already been created from a
             # previous import?
@@ -253,55 +263,55 @@ class SH3DImporter:
             self.default_floor = self.fc_objects.get('Level') if 'Level' in self.fc_objects else self._create_default_floor()
 
         # Importing <room> elements ...
-        self._import_elements(home, 'room')
+        self._import_elements(home, ET_XPATH_ROOM)
 
         # Importing <wall> elements ...
-        self._import_elements(home, 'wall')
-
+        self._import_elements(home, ET_XPATH_WALL)
         self._refresh()
 
         if self.preferences["CREATE_GROUND_MESH"]:
             self._create_ground_mesh(home)
+            self._refresh()
 
-        self._refresh()
         if App.GuiUp and self.preferences["FIT_VIEW"]:
             Gui.SendMsgToActiveView("ViewFit")
 
         # Importing <doorOrWindow> elements ...
         if self.preferences["IMPORT_DOORS_AND_WINDOWS"]:
-            self._import_elements(home, 'doorOrWindow')
-            for furniture_group in home.findall('furnitureGroup'):
-                self._import_elements(furniture_group, 'doorOrWindow', False)
+            self._import_elements(home, ET_XPATH_DOOR_OR_WINDOWS)
             self._refresh()
-            _msg(f"Updating Facebinders definitions. Please wait ...")
-            for facebinder in self.facebinders:
-                faces = []
-                new_sel_subshapes = []
-                for (sel_object, sel_subshapes) in facebinder.Faces:
-                    for sel_subshape in sel_subshapes:
-                        sel_subshape = sel_subshape[1:] if sel_subshape.startswith('?') else sel_subshape
-                        new_sel_subshapes.append(sel_subshape)
-                    faces.append((sel_object, new_sel_subshapes))
-                facebinder.Faces = faces
-            _msg(f"Updated Facebinders definitions.")
-            self._refresh()
+
+        # Door&Windows have been imported. Now we can decorate...
+        if self.preferences["DECORATE_WALLS"]:
+            if self.progress_bar:
+                self.progress_bar.stop()
+                self.progress_bar.start(f"Decorating {len(self.delayed_decorations)} walls. Please wait ...", len(self.delayed_decorations))
+            _msg(f"Decorating {len(self.delayed_decorations)} walls ...")
+            handler = self.handlers[ET_XPATH_WALL]
+
+            faces = {}
+            for wall in self.walls:
+                faces[wall.id] = self._get_faces(wall)
+
+            for (floor, wall, elm) in self.delayed_decorations:
+                handler.decorate(floor, wall, elm, faces[wall.id])
+                if self.progress_bar: self.progress_bar.next()
+            if self.progress_bar: self.progress_bar.stop()
 
         # Importing <pieceOfFurniture> && <furnitureGroup> elements ...
         if self.preferences["IMPORT_FURNITURES"]:
-            self._import_elements(home, 'pieceOfFurniture')
-            for furniture_group in home.findall('furnitureGroup'):
-                self._import_elements(furniture_group, 'pieceOfFurniture', False)
+            self._import_elements(home, ET_XPATH_PIECE_OF_FURNITURE)
             self._refresh()
 
         # Importing <light> elements ...
         if self.preferences["IMPORT_LIGHTS"]:
-            self._import_elements(home, 'light')
+            self._import_elements(home, ET_XPATH_LIGHT)
             self._refresh()
 
         # Importing <observerCamera> elements ...
         if self.preferences["IMPORT_CAMERAS"]:
-            self._import_elements(home, 'observerCamera')
-            self._import_elements(home, 'camera')
+            self._import_elements(home, ET_XPATH_OBSERVER_CAMERA)
+            self._import_elements(home, ET_XPATH_CAMERA)
             self._refresh()
 
         if self.preferences["CREATE_RENDER_PROJECT"] and self.site:
@@ -340,29 +350,28 @@ class SH3DImporter:
             'CREATE_GROUND_MESH': get_param_arch("sh3dCreateGroundMesh"),
             'DEFAULT_GROUND_COLOR': color_fc2sh(get_param_arch("sh3dDefaultGroundColor")),
             'DEFAULT_SKY_COLOR': color_fc2sh(get_param_arch("sh3dDefaultSkyColor")),
+            'DECORATE_WALLS': get_param_arch("sh3dDecorateWalls"),
         }
 
     def _setup_handlers(self):
         self.handlers = {
-            'level': LevelHandler(self),
-            'room': RoomHandler(self),
-            'wall': WallHandler(self),
+            ET_XPATH_LEVEL: LevelHandler(self),
+            ET_XPATH_ROOM: RoomHandler(self),
+            ET_XPATH_WALL: WallHandler(self),
         }
         if self.preferences["IMPORT_DOORS_AND_WINDOWS"]:
-            self.handlers['doorOrWindow'] = DoorOrWindowHandler(self)
-            self.handlers['furnitureGroup'] = None
+            self.handlers[ET_XPATH_DOOR_OR_WINDOWS] = DoorOrWindowHandler(self)
 
         if self.preferences["IMPORT_FURNITURES"]:
-            self.handlers['pieceOfFurniture'] = FurnitureHandler(self)
-            self.handlers['furnitureGroup'] = None
+            self.handlers[ET_XPATH_PIECE_OF_FURNITURE] = FurnitureHandler(self)
 
         if self.preferences["IMPORT_LIGHTS"]:
-            self.handlers['light'] = LightHandler(self)
+            self.handlers[ET_XPATH_LIGHT] = LightHandler(self)
 
         if self.preferences["IMPORT_CAMERAS"]:
             camera_handler = CameraHandler(self)
-            self.handlers['observerCamera'] = camera_handler
-            self.handlers['camera'] = camera_handler
+            self.handlers[ET_XPATH_OBSERVER_CAMERA] = camera_handler
+            self.handlers[ET_XPATH_CAMERA] = camera_handler
 
     def _refresh(self):
         App.ActiveDocument.recompute()
@@ -491,8 +500,8 @@ class SH3DImporter:
     def get_walls(self):
         return self.walls
 
-    def add_facebinder(self, facebinder):
-        self.facebinders.append(facebinder)
+    def add_delayed_decorations(self, floor, wall, elm):
+        self.delayed_decorations.append((floor, wall, elm))
 
     def _create_groups(self):
         """Create FreeCAD Group for the different imported elements
@@ -594,7 +603,7 @@ class SH3DImporter:
 
         self.site.addObject(ground)
 
-    def _import_elements(self, parent, tag, update_progress=True):
+    def _import_elements(self, parent, xpath):
         """Generic function to import a specific element.
 
         This function will lookup the handler registered for the elements
@@ -604,27 +613,28 @@ class SH3DImporter:
         Args:
             parent (Element): the parent of the elements to be imported.
                 Usually the <home> element.
-            tag (str): the tag of the elements to be imported.
+            xpath (str): the xpath of the elements to be imported.
             update_progress (bool, optional): whether to update the
                 progress. Set to false when importing a group of elements.
                 Defaults to True.
         """
-        tags = list(self.handlers.keys())
-        elements = parent.findall(tag)
-        if update_progress and self.progress_bar:
+        xpaths = list(self.handlers.keys())
+        elements = parent.findall(xpath)
+        tag_name = xpath[3:] if xpath.startswith('.') else xpath
+        if self.progress_bar:
             self.progress_bar.stop()
-            self.progress_bar.start(f"Step {tags.index(tag)+1}/{len(tags)}: importing {len(elements)} '{tag}' elements. Please wait ...", len(elements))
-            _msg(f"Importing {len(elements)} '{tag}' elements ...")
+            self.progress_bar.start(f"Step {xpaths.index(xpath)+1}/{len(xpaths)}: importing {len(elements)} '{tag_name}' elements. Please wait ...", len(elements))
+            _msg(f"Importing {len(elements)} '{tag_name}' elements ...")
         def _process(tuple):
             (i, elm) = tuple
-            _msg(f"Importing {tag}#{i} ({self.current_object_count + 1}/{self.total_object_count}) ...")
+            _msg(f"Importing {tag_name}#{i} ({self.current_object_count + 1}/{self.total_object_count}) ...")
             try:
-                self.handlers[tag].process(parent, i, elm)
+                self.handlers[xpath].process(parent, i, elm)
             except Exception as e:
-                _err(f"Failed to import <{tag}>#{i} ({elm.get('id', elm.get('name'))}):")
+                _err(f"Failed to import <{tag_name}>#{i} ({elm.get('id', elm.get('name'))}):")
                 _err(str(e))
                 _err(traceback.format_exc())
-            if update_progress and self.progress_bar:
+            if self.progress_bar:
                 self.progress_bar.next()
             self.current_object_count = self.current_object_count + 1
         list(map(_process, enumerate(elements)))
@@ -695,6 +705,68 @@ class SH3DImporter:
             self.site.EPWFile = '' # https://www.ladybug.tools/epwmap/ or https://climate.onebuilding.org
         else:
             _msg(f"No <compass> tag found in <{elm.tag}>")
+
+    def _get_faces(self, wall):
+        """Returns the name of the left and right face for `wall`
+
+        The face names are suitable for selection later on when creating 
+        the Facebinders and baseboards
+
+        Args:
+            wall (Arch.Wall): the wall for which we have to determine
+                the left and right side.
+
+        Returns:
+            tuple: a tuple of string containing the name of the left and
+                right side of the wall
+        """
+        # In order to handle curved walls, take the oriented line (from
+        # start to end) that pass throuh the center of gravity of the wall
+        # Hopefully the COG of the face will always be on the correct side
+        # of the COG of the wall
+        wall_start = wall.BaseObjects[2].Start
+        wall_end = wall.BaseObjects[2].End
+        wall_cog_start = wall.Shape.CenterOfGravity
+        wall_cog_end = wall_cog_start + wall_end - wall_start
+
+        left_face_name = right_face_name = None
+        left_face = right_face = None
+        for (i, face) in enumerate(wall.Shape.Faces):
+            face_cog = face.CenterOfGravity
+
+            # The face COG is not on the same z as the wall COG
+            # just skipping.
+            if not math.isclose(face_cog.z, wall_cog_start.z, abs_tol=1):
+                continue
+
+            side = self._get_face_side(wall_cog_start, wall_cog_end, face_cog)
+            # NOTE: face names start at 1...
+            if side > 0:
+                left_face_name = f"Face{i+1}"
+                left_face = face
+            elif side < 0:
+                right_face_name = f"Face{i+1}"
+                right_face = face
+            if left_face_name and right_face_name:
+                # Optimization. Is it always true?
+                break
+        return (left_face_name, left_face, right_face_name, right_face)
+
+    def _get_face_side(self, start:App.Vector, end:App.Vector, cog:App.Vector):
+        # Compute vectors
+        ab = end - start  # Vector from start to end
+        ac = cog - start  # Vector from start to CenterOfGravity
+
+        ab.z = 0
+        ac.z = 0
+
+        # Compute the cross product (z-component is enough for 2D test)
+        cross_z = ab.x * ac.y - ab.y * ac.x
+
+        # Determine the position of point cog
+        if math.isclose(cross_z, 0, abs_tol=1):
+            return 0
+        return cross_z
 
 
 class BaseHandler:
@@ -853,14 +925,15 @@ class LevelHandler(BaseHandler):
 
 
     def _add_groups(self, floor):
-        group = floor.newObject("App::DocumentObjectGroup", "Facebinders")
-        self.setp(floor, "App::PropertyString", "FacebinderGroupName", "The DocumentObjectGroup name for all Facebinders on this floor", group.Name)
+        if self.importer.preferences["DECORATE_WALLS"]:
+            group = floor.newObject("App::DocumentObjectGroup", "Facebinders")
+            self.setp(floor, "App::PropertyString", "FacebinderGroupName", "The DocumentObjectGroup name for all Facebinders on this floor", group.Name)
+            group = floor.newObject("App::DocumentObjectGroup", "Baseboards")
+            self.setp(floor, "App::PropertyString", "BaseboardGroupName", "The DocumentObjectGroup name for all baseboards on this floor", group.Name)
 
         if self.importer.preferences["IMPORT_FURNITURES"]:
             group = floor.newObject("App::DocumentObjectGroup", "Furnitures")
             self.setp(floor, "App::PropertyString", "FurnitureGroupName", "The DocumentObjectGroup name for all furnitures in this floor", group.Name)
-            group = floor.newObject("App::DocumentObjectGroup", "Baseboards")
-            self.setp(floor, "App::PropertyString", "BaseboardGroupName", "The DocumentObjectGroup name for all baseboards on this floor", group.Name)
 
 
 class RoomHandler(BaseHandler):
@@ -1003,13 +1076,8 @@ class WallHandler(BaseHandler):
         self._set_properties(wall, elm)
         wall.recompute(True)
 
-        # self._create_facebinders(floor, wall, elm)
-
-        if self.importer.preferences["IMPORT_FURNITURES"]:
-            for baseboard in elm.findall('baseboard'):
-                space = self._import_baseboard(floor, wall, baseboard)
-                if space:
-                    space.Boundaries = space.Boundaries + [wall]
+        if self.importer.preferences["DECORATE_WALLS"]:
+            self.importer.add_delayed_decorations(floor, wall, elm)
 
         floor.addObject(wall)
         if base_object:
@@ -1079,7 +1147,7 @@ class WallHandler(BaseHandler):
         # object based on ruled surface instead.
         # See https://github.com/FreeCAD/FreeCAD/issues/18658 and related OCCT
         #   ticket
-        if (sweep.Shape.isNull() or not sweep.Shape.isValid()):
+        if sweep.Shape.isNull() or not sweep.Shape.isValid():
             if is_wall_straight:
                 _log(f"Sweep's shape is invalid, using ruled surface instead ...")
                 App.ActiveDocument.removeObject(sweep.Label)
@@ -1091,7 +1159,7 @@ class WallHandler(BaseHandler):
         else:
             wall = Arch.makeWall(sweep)
 
-        # Keep track of base object. Used for baseboard import
+        # Keep track of base objects. Used to decorate walls
         self.importer.set_property(wall, "App::PropertyLinkList", "BaseObjects", "The different base objects whose sweep failed. Kept for compatibility reasons", [section_start, section_end, spine])
 
         # TODO: Width is incorrect when joining walls
@@ -1246,6 +1314,10 @@ class WallHandler(BaseHandler):
         # The Length property is used in the Wall to calculate volume, etc...
         # Since make Circle does not calculate this Length I calculate it here...
         self.importer.set_property(spine, "App::PropertyFloat", "Length", "The length of the Arc", length, group="Draft")
+        # The Start and End property are used in the Wall to  determine Facebinders 
+        # characteristics...
+        self.importer.set_property(spine, "App::PropertyVector", "Start", "The start point of the Arc", start, group="Draft")
+        self.importer.set_property(spine, "App::PropertyVector", "End", "The end point of the Arc", end, group="Draft")
 
         App.ActiveDocument.recompute([section_start, section_end, spine])
         if self.importer.preferences["DEBUG"]:
@@ -1441,65 +1513,74 @@ class WallHandler(BaseHandler):
             return f"({round(getattr(v, 'x'), ndigits)},{round(getattr(v, 'y'), ndigits)}{',' + str(round(getattr(v, 'z'), ndigits)) if print_z else ''})"
         raise ValueError(f"Expected a Point or Vector, got {type(v)}")
 
-    def _create_facebinders(self, floor, wall, elm):
+    def decorate(self, floor, wall, elm, faces):
+        (left_face_name, left_face, right_face_name, right_face) = faces
+        self._create_facebinders(floor, wall, elm, left_face_name, right_face_name)
+        self._create_baseboards(floor, wall, elm, left_face, right_face)
+
+    def _create_facebinders(self, floor, wall, elm, left_face_name, right_face_name):
         """Set the wall's colors taken from `elm`.
 
         Creates 2 FaceBinders (left and right) and sets the corresponding
         color and the shininess of the wall.
 
         Args:
+            floor (Arch::Level): the level the wall belongs to. Used to group
+                the resulting Facebinders
             wall (Arch::Wall): the wall to paint
             elm (Element): the xml element for the wall to be imported
+            left_face_name (str): the name of the left face suitable for selecting
+            right_face_name (str): the name of the right face suitable for selecting
         """
         # The top color is the color of the "mass" of the wall
         top_color = elm.get('topColor', self.importer.preferences["DEFAULT_FLOOR_COLOR"])
         set_color_and_transparency(wall, top_color)
+        self._create_facebinder(floor, wall, elm, top_color, left_face_name, "left")
+        self._create_facebinder(floor, wall, elm, top_color, right_face_name, "right")
 
-        left_facebinder = Draft.make_facebinder(( wall, ("Face2", ) ))
-        left_facebinder.Extrusion = 1
-        left_facebinder.Label = wall.Label + "-fb-left"
-        left_side_color = elm.get('leftSideColor', top_color)
-        set_color_and_transparency(left_facebinder, left_side_color)
-        left_side_shininess = elm.get('leftSideShininess', 0)
-        set_shininess(left_facebinder, left_side_shininess)
-        floor.getObject(floor.FacebinderGroupName).addObject(left_facebinder)
-        self.importer.add_facebinder(left_facebinder)
+    def _create_facebinder(self, floor, wall, elm, top_color, face_name, side):
+        if face_name:
+            facebinder = Draft.make_facebinder(( wall, (face_name, ) ))
+            facebinder.Extrusion = 1
+            facebinder.Label = wall.Label + f"-fb-{side}"
+            side_color = elm.get(f"{side}SideColor", top_color)
+            set_color_and_transparency(facebinder, side_color)
+            side_shininess = elm.get(f"{side}SideShininess", 0)
+            set_shininess(facebinder, side_shininess)
+            floor.getObject(floor.FacebinderGroupName).addObject(facebinder)
+        else:
+            _wrn(f"Failed to determine {side} face for wall {wall.Label}!")
 
-        right_facebinder = Draft.make_facebinder(( wall, ("Face4", ) ))
-        right_facebinder.Extrusion = 1
-        right_facebinder.Label = wall.Label + "-fb-right"
-        right_side_color = elm.get('rightSideColor', top_color)
-        set_color_and_transparency(right_facebinder, right_side_color)
-        right_side_shininess = elm.get('rightSideShininess', 0)
-        set_shininess(right_facebinder, right_side_shininess)
-        floor.getObject(floor.FacebinderGroupName).addObject(right_facebinder)
-        self.importer.add_facebinder(right_facebinder)
-
-    def _import_baseboard(self, floor, wall, elm):
+    def _create_baseboards(self, floor, wall, elm, left_face, right_face):
         """Creates and returns a Part::Extrusion from the imported_baseboard object
 
         Args:
             floor (Slab): the Slab the wall belongs to
             wall (Wall): the Arch wall
-            elm (Element): the wall being imported
+            elm (Element): the wall being imported (with child baseboards)
+            left_face (Part.Face): the left hand side of the wall
+            right_face (Part.Face): the right hand side of the wall
 
         Returns:
             Part::Extrusion: the newly created object
         """
-        wall_width = float(wall.Width)
+        for i, baseboard in enumerate(elm.findall('baseboard')):
+            side = baseboard.get('attribute')
+            face = left_face if side == 'leftSideBaseboard' else right_face
+            if not face:
+                _wrn(f"No face found for {side} on wall {wall.id}. Bailing out!")
+                continue
+            self._create_baseboard(floor, wall, baseboard, face)
+
+    def _create_baseboard(self, floor, wall, elm, face):
 
         baseboard_width = dim_sh2fc(elm.get('thickness'))
         baseboard_height = dim_sh2fc(elm.get('height'))
 
-        # This is brittle in case the wall is merged and the there are already
-        # some doors, windows, etc...
-        side = elm.get('attribute')
-        faces = wall.Base.Shape.Faces
-        face = faces[1] if side == 'leftSideBaseboard' else faces[3]
-
         # Once I have the face, I get the lowest edge.
         lowest_z = float('inf')
         bottom_edge = None
+
         for edge in face.Edges:
             if edge and edge.CenterOfMass and edge.CenterOfMass.z < lowest_z:
                 lowest_z = edge.CenterOfMass.z
@@ -1523,6 +1604,7 @@ class WallHandler(BaseHandler):
         for edge in [edge0, edge1, edge2, edge3]:
             edge.Vertexes[0].Point.z = edge.Vertexes[1].Point.z = ref_z
 
+        side = elm.get('attribute')
         baseboard_id = f"{wall.id}-{side}"
         baseboard = None
         if self.importer.preferences["MERGE"]:
