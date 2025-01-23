@@ -190,7 +190,7 @@ class SH3DImporter:
         self.default_floor = None
         self.floors = {}
         self.walls = []
-        self.space_upper_faces = []
+        self.spaces = {}
         self.delayed_decorations = []
 
     def import_sh3d_from_string(self, home:str):
@@ -245,9 +245,7 @@ class SH3DImporter:
         # Get all the FreeCAD object in the active doc, in order to allow
         # for merge of existing object
         if self.preferences["MERGE"]:
-            for object in doc.Objects:
-                if hasattr(object, 'id'):
-                    self.fc_objects[object.id] = object
+            list(map(lambda o2: self.add_fc_objects(o2), list(filter(lambda o1: hasattr(o1, 'id'), doc.Objects))))
 
         # Let's create the project and site for this import
         self._setup_project(home)
@@ -425,6 +423,17 @@ class SH3DImporter:
         if name not in obj.PropertiesList:
             obj.addProperty(property_type, name, group, description)
 
+    def add_fc_objects(self, obj):
+        """Register `obj`.
+
+        This object can then be referenced later on by
+        other objects (i.e. light, etc.)
+
+        Args:
+            obj (AppDocumentObject): the object to register
+        """
+        self.fc_objects[obj.id] = obj
+
     def get_fc_object(self, id, sh_type):
         """Returns the FC doc element corresponding to the imported id and sh_type
 
@@ -466,6 +475,11 @@ class SH3DImporter:
             return self.default_floor
         return self.floors.get(level_id, None)
 
+    def add_space(self, floor, space):
+        if floor.id not in self.spaces:
+            self.spaces[floor.id] = []
+        self.spaces[floor.id].append(space)
+
     def get_space(self, floor, p):
         """Returns the Space this point belongs to.
 
@@ -479,18 +493,17 @@ class SH3DImporter:
             Space: the space the object belongs to or None
         """
         closest_space = None
-        for (space_floor, space, space_face) in self.space_upper_faces:
-            if not space_face: #?!?
-                continue
-            space_face_z = space_face.CenterOfMass.z
-            projection = App.Vector(p.x, p.y, space_face_z)
+        for space in self.spaces.get(floor.id, []):
+            space_face = space.Base.Shape
+            space_z = space_face.CenterOfMass.z
+            projection = App.Vector(p.x, p.y, space_z)
             # Checks that:
             #   - the point's projection is inside the face
             #   - the point is above the face
             #   - the point's parent and the face's are on the same level
             # NOTE: If two rooms overlap on the same level, the result is
             #   undefined...
-            if space_face.isInside(projection, 1, True) and space_face_z < p.z and space_floor.id == floor.id:
+            if space_face.isInside(projection, 1, True) and space_z < p.z:
                 closest_space = space
         return closest_space
 
@@ -521,10 +534,6 @@ class SH3DImporter:
             elm (str): the <home> element
 
         """
-        if 'Project' in self.fc_objects:
-            self.project = self.fc_objects.get('Project')
-        elif self.preferences["CREATE_IFC_PROJECT"]:
-            self.project = self._create_project()
         if 'Site' in self.fc_objects:
             self.site = self.fc_objects.get('Site')
         else:
@@ -536,10 +545,14 @@ class SH3DImporter:
         else:
             self.building = self._create_building(elm)
 
-        if self.preferences["CREATE_IFC_PROJECT"]:
-            self.project.addObject(self.site)
-
         self.site.addObject(self.building)
+
+        if 'Project' in self.fc_objects:
+            self.project = self.fc_objects.get('Project')
+        elif self.preferences["CREATE_IFC_PROJECT"]:
+            self.project = self._create_project()
+        if self.project:
+            self.project.addObject(self.site)
 
     def _create_project(self):
         """Create a default Arch::Project object
@@ -832,49 +845,6 @@ class BaseHandler:
         """
         return self.importer.get_space(floor, p)
 
-    def _get_upper_face(self, faces):
-        """Returns the upper face of a given list of faces
-
-        More specifically returns the face with the highest z.
-        It is used to figure out which space a furniture belongs to.
-
-        Args:
-            faces (list): The list of faces
-
-        Returns:
-            Face: the upper face
-        """
-        upper_face = None
-        com_max_z = -float('inf')
-        for face in faces:
-            com = face.CenterOfMass
-            if com.z > com_max_z:
-                upper_face = face
-                com_max_z = com.z
-        return upper_face
-
-    def _get_lower_face(self, faces):
-        """Returns the lower face of a given list of faces
-
-        More specifically returns the face with the lowest z.
-        It is used to figure out which space a furniture belongs to.
-
-        Args:
-            faces (list): The list of faces
-
-        Returns:
-            Face: the lower face
-        """
-        lower_face = None
-        com_min_z = float('inf')
-        for face in faces:
-            com = face.CenterOfMass
-            if com.z < com_min_z:
-                lower_face = face
-                com_min_z = com.z
-        return lower_face
-
-
 class LevelHandler(BaseHandler):
     """A helper class to import a SH3D `<level>` object."""
 
@@ -899,8 +869,7 @@ class LevelHandler(BaseHandler):
         floor.Placement.Base.z = dim_sh2fc(float(elm.get('elevation')))
         floor.Height = dim_sh2fc(float(elm.get('height')))
         self._set_properties(floor, elm)
-
-        floor.ViewObject.Visibility = elm.get('visible', 'true') == 'true'
+        floor.Visibility = elm.get('visible', 'true') == 'true'
         self._add_groups(floor)
         self.importer.add_floor(floor)
 
@@ -910,7 +879,7 @@ class LevelHandler(BaseHandler):
         floor.Placement.Base.z = 0
         floor.Height = 2500
 
-        self._set_properties(floor, dict({'shType': 'level', 'id':'Level', 'floorThickness':dim_fc2sh(250), 'elevationIndex': 0, 'viewable': True}))
+        self._set_properties(floor, dict({'shType': 'level', 'id':'Level', 'floorThickness':floor.Height, 'elevationIndex': 0, 'viewable': True}))
         self._add_groups(floor)
         self.importer.add_floor(floor)
 
@@ -922,7 +891,6 @@ class LevelHandler(BaseHandler):
         self.setp(obj, "App::PropertyFloat", "floorThickness", "The floor's slab thickness", dim_sh2fc(float(elm.get('floorThickness'))))
         self.setp(obj, "App::PropertyInteger", "elevationIndex", "The floor number", elm)
         self.setp(obj, "App::PropertyBool", "viewable", "Whether the floor is viewable", elm)
-
 
     def _add_groups(self, floor):
         if self.importer.preferences["DECORATE_WALLS"]:
@@ -956,61 +924,38 @@ class RoomHandler(BaseHandler):
         floor = self.get_floor(level_id)
         assert floor != None, f"Missing floor '{level_id}' for <room> '{elm.get('id')}' ..."
 
-        # A Room is composed of a space with the slab as the base object
-
-        points = []
-        for point in elm.findall('point'):
-            x = float(point.get('x'))
-            y = float(point.get('y'))
-            z = dim_fc2sh(floor.Placement.Base.z)
-            points.append(coord_sh2fc(App.Vector(x, y, z)))
-
-        slab = None
+        space = face = None
         if self.importer.preferences["MERGE"]:
-            slab = self.get_fc_object(elm.get("id"), 'room')
+            space = self.get_fc_object(elm.get("id"), 'room')
 
-        if not slab:
-            line = Draft.make_wire(points, placement=App.Placement(), closed=True, face=True, support=None)
-            slab = Arch.makeStructure(line, height=floor.floorThickness)
-
-        slab.Label = elm.get('name', 'Room') + '-slab'
-        slab.IfcType = "Slab"
-        slab.Normal = -Z_NORM
-
-        color = elm.get('floorColor', self.importer.preferences["DEFAULT_FLOOR_COLOR"])
-        set_color_and_transparency(slab, color)
-        self._set_properties(slab, elm)
-
-        slab.recompute(True)
-
-        # No 1-to-1 correspondance between SH3D <room> and FC element.
-        # Creating a fake SH3D elemement in order to take advantage of the
-        # different lookup facilities. NOTE the suffix '-space' for both
-        # the sh_type and id...
-        space = None
-        if self.importer.preferences["MERGE"]:
-            space = self.get_fc_object(elm.get("id")+"-space", 'room-space')
-
+        # A Room is composed of a space with a Face as the base object
         if not space:
-            space = Arch.makeSpace(slab)
+            floor_z = dim_fc2sh(floor.Placement.Base.z)
+            points = [ coord_sh2fc(App.Vector(float(p.get('x')), float(p.get('y')), floor_z)) for p in elm.findall('point') ]
+            points.append(points[0]) # Closing the loop
+            edges = [Part.LineSegment(points[i], points[i+1]).toShape() for i in range(len(points) - 1)]
+
+            face = App.ActiveDocument.addObject("Part::Feature", "Footprint")
+            face.Shape = Part.Face(Part.Wire(edges))
+            face.Label = elm.get('name', 'Room') + '-footprint'
+
+            space = Arch.makeSpace(face)
             space.IfcType = "Space"
             space.Label = elm.get('name', 'Room')
-            self._set_space_properties(space, elm)
+            self._set_properties(space, elm)
+            # Remove Expression...
+            space.ElevationWithFlooring = 0
 
-        self.importer.fc_objects[slab.id] = slab
-        self.importer.fc_objects[space.id] = space
+            if self.importer.preferences["DECORATE_WALLS"]:
+                self._add_facebinder(floor, space, elm, 'floor', 0, self.importer.preferences["DEFAULT_FLOOR_COLOR"])
+                self._add_facebinder(floor, space, elm, 'ceiling', floor.Height, self.importer.preferences["DEFAULT_CEILING_COLOR"])
 
         # We then update the upper face of the slab in order to relate any 
         # point above with a specific Arch::Space. The Arch::Space is then
         # used to group slabs, furnitures, baseboards, etc
-        upper_face = self._get_upper_face(slab.Shape.Faces)
-        if not upper_face:
-            _wrn(f"Couldn't find the upper face of slab {slab.Label} on level {floor.Label}!")
-        else:
-            self.importer.space_upper_faces.append((floor, space, upper_face))
+        self.importer.add_space(floor, space)
 
-        slab.Visibility = True if slab.floorVisible else False
-        space.Visibility = True if slab.floorVisible else False
+        space.Visibility = True if space.floorVisible else False
 
         floor.addObject(space)
 
@@ -1039,6 +984,16 @@ class RoomHandler(BaseHandler):
         self.setp(obj, "App::PropertyString", "shType", "The element type", 'room-space')
         self.setp(obj, "App::PropertyString", "id", "The slab's id", elm.get('id', str(uuid.uuid4()))+"-space")
 
+    def _add_facebinder(self, floor, space, elm, face_name, face_height, face_color):
+        # NOTE: always use Face1 as this is a 2D object
+        facebinder = Draft.make_facebinder(( space.Base, ("Face1", ) ))
+        facebinder.Extrusion = 1
+        facebinder.Offset = face_height
+        facebinder.Label = space.Label + f" {face_name}"
+        facebinder.Visibility = elm.get(f"{face_name}Visible", "true") == "true"
+        set_color_and_transparency(facebinder, elm.get(f"{face_name}Color", face_color))
+        set_shininess(facebinder, elm.get(f"{face_name}Shininess", 0))
+        floor.getObject(floor.FacebinderGroupName).addObject(facebinder)
 
 class WallHandler(BaseHandler):
     """A helper class to import a SH3D `<wall>` object."""
@@ -1246,11 +1201,6 @@ class WallHandler(BaseHandler):
         arc_extent = ang_sh2fc(elm.get('arcExtent', 0))
         height_start = dim_sh2fc(elm.get('height', dim_fc2sh(floor.Height)))
         height_end = dim_sh2fc(elm.get('heightAtEnd', dim_fc2sh(height_start)))
-
-        # NOTE: the wall height is adjusted with the floor thickness
-        # BUG: It should be adjusted for all floor except the last one.
-        height_start = height_start + floor.floorThickness -10
-        height_end = height_end + floor.floorThickness -10
 
         start = coord_sh2fc(App.Vector(x_start, y_start, z))
         end = coord_sh2fc(App.Vector(x_end, y_end, z))
@@ -1542,7 +1492,7 @@ class WallHandler(BaseHandler):
         if face_name:
             facebinder = Draft.make_facebinder(( wall, (face_name, ) ))
             facebinder.Extrusion = 1
-            facebinder.Label = wall.Label + f"-fb-{side}"
+            facebinder.Label = wall.Label + f" finish {side}"
             side_color = elm.get(f"{side}SideColor", top_color)
             set_color_and_transparency(facebinder, side_color)
             side_shininess = elm.get(f"{side}SideShininess", 0)
@@ -1591,6 +1541,7 @@ class WallHandler(BaseHandler):
         offset_vector = p_normal.normalize().multiply(baseboard_width)
         offset_bottom_edge = bottom_edge.translated(offset_vector)
 
+        side = elm.get('attribute')
         if self.importer.preferences["DEBUG"]:
             _log(f"Creating {side} for {wall.Label} from edge {self._pe(bottom_edge, True)} to {self._pe(offset_bottom_edge, True)} (normal={self._pv(p_normal, True, 4)})")
 
@@ -1604,17 +1555,16 @@ class WallHandler(BaseHandler):
         for edge in [edge0, edge1, edge2, edge3]:
             edge.Vertexes[0].Point.z = edge.Vertexes[1].Point.z = ref_z
 
-        side = elm.get('attribute')
-        baseboard_id = f"{wall.id}-{side}"
+        baseboard_id = f"{wall.id} {side}"
         baseboard = None
         if self.importer.preferences["MERGE"]:
             baseboard = self.get_fc_object(baseboard_id, 'baseboard')
 
         if not baseboard:
-            base = App.ActiveDocument.addObject("Part::Feature", "baseboard-base")
+            base = App.ActiveDocument.addObject("Part::Feature", f"{wall.Label} {side} base")
             base.Shape = Part.makeFace([ Part.Wire([edge0, edge1, edge2, edge3]) ])
             base.Visibility = False
-            baseboard = App.ActiveDocument.addObject('Part::Extrusion', f"{wall.Label}-{side}")
+            baseboard = App.ActiveDocument.addObject('Part::Extrusion', f"{wall.Label} {side}")
             baseboard.Base = base
 
         baseboard.DirMode = "Custom"
@@ -1639,12 +1589,12 @@ class WallHandler(BaseHandler):
         space = self.get_space(floor, baseboard.Shape.BoundBox.Center)
         if space:
             space.Group = space.Group + [baseboard]
+            # The space does not really calculate the volume according to the
+            # enclosing walls...
+            # space.Boundaries = space.Boundaries + [wall]
         else:
             _log(f"No space found to enclose {baseboard.Label}. Adding to generic group.")
             floor.getObject(floor.BaseboardGroupName).addObject(baseboard)
-
-        # Returns the Space for the wall to be added to the space.Boundaries
-        return space
 
 
 class BaseFurnitureHandler(BaseHandler):
@@ -1924,7 +1874,7 @@ class FurnitureHandler(BaseFurnitureHandler):
 
         # We add the object to the list of known object that can then
         # be referenced elsewhere in the SH3D model (i.e. lights).
-        self.importer.fc_objects[feature.id] = feature
+        self.importer.add_fc_objects(feature)
 
     def _create_equipment(self, floor, elm):
         width = dim_sh2fc(float(elm.get('width')))

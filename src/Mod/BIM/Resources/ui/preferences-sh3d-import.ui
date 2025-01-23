@@ -270,9 +270,9 @@
                     </property>
                     <property name="color" stdset="0">
                       <color>
-                        <red>255</red>
-                        <green>255</green>
-                        <blue>255</blue>
+                        <red>246</red>
+                        <green>246</green>
+                        <blue>246</blue>
                       </color>
                     </property>
                     <property name="prefEntry" stdset="0">
@@ -403,7 +403,7 @@
             <item>
               <widget class="Gui::PrefCheckBox" name="checkBox_decorate_walls">
                 <property name="toolTip">
-                  <string>Create Facebinders and Baseboards for walls</string>
+                  <string>Create Facebinders, Baseboards for walls, floors and ceilings</string>
                 </property>
                 <property name="text">
                   <string>Decorate walls</string>
