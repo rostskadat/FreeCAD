@@ -401,15 +401,15 @@
               </layout>
             </item>
             <item>
-              <widget class="Gui::PrefCheckBox" name="checkBox_decorate_walls">
+              <widget class="Gui::PrefCheckBox" name="checkBox_decorate_surfaces">
                 <property name="toolTip">
-                  <string>Create Facebinders, Baseboards for walls, floors and ceilings</string>
+                  <string>Create Facebinders, Baseboards for walls, floors and ceilings for Rooms</string>
                 </property>
                 <property name="text">
-                  <string>Decorate walls</string>
+                  <string>Decorate surfaces</string>
                 </property>
                 <property name="prefEntry" stdset="0">
-                  <cstring>sh3dDecorateWalls</cstring>
+                  <cstring>sh3dDecorateSurfaces</cstring>
                 </property>
                 <property name="prefPath" stdset="0">
                   <cstring>Mod/Arch</cstring>
