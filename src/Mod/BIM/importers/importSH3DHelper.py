@@ -404,6 +404,8 @@ class SH3DImporter:
                 value = float(value.get(name, 0))
             elif type_ == "App::PropertyInteger":
                 value = int(value.get(name, 0))
+            elif type_ == "App::PropertyPercent":
+                value = int(value.get(name, 0))
             elif type_ == "App::PropertyBool":
                 value = value.get(name, "true") == "true"
         if self.preferences["DEBUG"]:
@@ -1117,32 +1119,40 @@ class RoomHandler(BaseHandler):
         self.setp(obj, "App::PropertyFloat", "areaYOffset", "The room's area annotation y offset", elm)
         self.setp(obj, "App::PropertyBool", "floorVisible", "Whether the floor of the room is displayed", elm)
         self.setp(obj, "App::PropertyString", "floorColor", "The room's floor color", floor_color)
-        self.setp(obj, "App::PropertyFloat", "floorShininess", "The room's floor shininess", elm)
+        self.setp(obj, "App::PropertyPercent", "floorShininess", "The room's floor shininess", percent_sh2fc(elm.get('floorShininess', 0)))
         self.setp(obj, "App::PropertyBool", "ceilingVisible", "Whether the ceiling of the room is displayed", elm)
         self.setp(obj, "App::PropertyString", "ceilingColor", "The room's ceiling color", ceiling_color)
-        self.setp(obj, "App::PropertyFloat", "ceilingShininess", "The room's ceiling shininess", elm)
+        self.setp(obj, "App::PropertyPercent", "ceilingShininess", "The room's ceiling shininess", percent_sh2fc(elm.get('ceilingShininess', 0)))
         self.setp(obj, "App::PropertyBool", "ceilingFlat", "", elm)
 
     def post_process(self, obj):
         if self.importer.preferences["DECORATE_SURFACES"]:
             floor = App.ActiveDocument.getObject(obj.ReferenceFloorName)
-            self._add_facebinder(floor, obj, True)
-            self._add_facebinder(floor, obj, False)
+            self._add_facebinder(floor, obj, "floor")
+            self._add_facebinder(floor, obj, "ceiling")
 
-    def _add_facebinder(self, floor, space, is_floor):
-        # NOTE: always use Face1 as this is a 2D object
-        facebinder = Draft.make_facebinder(( space.ReferenceFace, ("Face1", ) ))
-        facebinder.Extrusion = 1
-        facebinder.Placement.Base.z = 1 if is_floor else floor.Height.Value-1
-        # self.setp(facebinder, "App::PropertyString", "ReferenceRoomName", "The Reference Arch.Space", space.Name)
+    def _add_facebinder(self, floor, space, side):
+        facebinder_id = f"{floor.id}-{space.id}-{side}-facebinder"
+        facebinder = None
+        if self.importer.preferences["MERGE"]:
+            facebinder = self.get_fc_object(facebinder_id, 'facebinder')
 
-        prefix = "floor" if is_floor else "ceiling"
-        facebinder.Label = space.Label + f" {prefix}"
-        facebinder.Visibility = getattr(space, f"{prefix}Visible")
-        set_color_and_transparency(facebinder, getattr(space, f"{prefix}Color"))
-        set_shininess(facebinder, getattr(space, f"{prefix}Shininess", 0))
+        if not facebinder:
+            # NOTE: always use Face1 as this is a 2D object
+            facebinder = Draft.make_facebinder(( space.ReferenceFace, ("Face1", ) ))
+            facebinder.Extrusion = 1
+            facebinder.Label = space.Label + f" {side} finish"
 
-        group_name = getattr(floor, "DecorationFloorsGroupName") if is_floor else getattr(floor, "DecorationCeilingsGroupName")
+        facebinder.Placement.Base.z = 1 if (side == "floor") else floor.Height.Value-1
+        facebinder.Visibility = getattr(space, f"{side}Visible")
+        set_color_and_transparency(facebinder, getattr(space, f"{side}Color"))
+        set_shininess(facebinder, getattr(space, f"{side}Shininess", 0))
+
+        self.setp(facebinder, "App::PropertyString", "shType", "The element type", 'facebinder')
+        self.setp(facebinder, "App::PropertyString", "id", "The element's id", facebinder_id)
+        self.setp(facebinder, "App::PropertyString", "ReferenceRoomName", "The Reference Arch.Space", space.Name)
+
+        group_name = getattr(floor, "DecorationFloorsGroupName") if (side == "floor") else getattr(floor, "DecorationCeilingsGroupName")
         floor.getObject(group_name).addObject(facebinder)
 
 
@@ -1217,9 +1227,9 @@ class WallHandler(BaseHandler):
         self.setp(obj, "App::PropertyString", "pattern", "The pattern of this wall in plan view", elm)
         self.setp(obj, "App::PropertyString", "topColor", "The wall inner color", top_color)
         self.setp(obj, "App::PropertyString", "leftSideColor", "The wall inner color", left_side_color)
-        self.setp(obj, "App::PropertyFloat", "leftSideShininess", "The room's ceiling shininess", elm)
+        self.setp(obj, "App::PropertyPercent","leftSideShininess", "The room's ceiling shininess", percent_sh2fc(elm.get('leftSideShininess', 0)))
         self.setp(obj, "App::PropertyString", "rightSideColor", "The wall inner color", right_side_color)
-        self.setp(obj, "App::PropertyFloat", "rightSideShininess", "The room's ceiling shininess", elm)
+        self.setp(obj, "App::PropertyPercent","rightSideShininess", "The room's ceiling shininess", percent_sh2fc(elm.get('rightSideShininess', 0)))
 
     def _set_baseboard_properties(self, obj, elm):
         # Baseboard are a little bit special:
@@ -1644,18 +1654,29 @@ class WallHandler(BaseHandler):
         # The top color is the color of the "mass" of the wall
         top_color = wall.topColor
         set_color_and_transparency(wall, top_color)
-        self._create_facebinder(floor, wall,left_face_name,  "left", top_color)
-        self._create_facebinder(floor, wall, right_face_name,  "right", top_color)
+        self._create_facebinder(floor, wall,left_face_name,  "left")
+        self._create_facebinder(floor, wall, right_face_name,  "right")
 
-    def _create_facebinder(self, floor, wall, face_name, side, default_color):
+    def _create_facebinder(self, floor, wall, face_name, side):
         if face_name:
-            facebinder = Draft.make_facebinder(( wall, (face_name, ) ))
-            facebinder.Extrusion = 1
-            facebinder.Label = wall.Label + f" finish {side}"
+            facebinder_id = f"{wall.id}-{side}-facebinder"
+            facebinder = None
+            if self.importer.preferences["MERGE"]:
+                facebinder = self.get_fc_object(facebinder_id, 'facebinder')
+
+            if not facebinder:
+                facebinder = Draft.make_facebinder(( wall, (face_name, ) ))
+                facebinder.Extrusion = 1
+                facebinder.Label = wall.Label + f" {side} side finish"
+
             color = getattr(wall, f"{side}SideColor")
             set_color_and_transparency(facebinder, color)
             shininess = getattr(wall, f"{side}SideShininess", 0)
             set_shininess(facebinder, shininess)
+            self.setp(facebinder, "App::PropertyString", "shType", "The element type", 'facebinder')
+            self.setp(facebinder, "App::PropertyString", "id", "The element's id", facebinder_id)
+            self.setp(facebinder, "App::PropertyString", "ReferenceWallName", "The element's wall Name", wall.Name)
+
             floor.getObject(floor.DecorationWallsGroupName).addObject(facebinder)
         else:
             _wrn(f"Failed to determine {side} face for wall {wall.Label}!")
@@ -1737,7 +1758,7 @@ class WallHandler(BaseHandler):
 
         self.setp(baseboard, "App::PropertyString", "shType", "The element type", 'baseboard')
         self.setp(baseboard, "App::PropertyString", "id", "The element's id", baseboard_id)
-        # self.setp(baseboard, "App::PropertyLink", "parent", "The element parent", wall)
+        self.setp(baseboard, "App::PropertyString", "ReferenceWallName", "The element's wall Name", wall.Name)
 
         baseboard.recompute(True)
         floor.getObject(floor.DecorationBaseboardsGroupName).addObject(baseboard)
@@ -1848,7 +1869,7 @@ class BaseFurnitureHandler(BaseHandler):
         self.setp(obj, "App::PropertyBool", "deformable", "Whether the object is deformable", elm)
         self.setp(obj, "App::PropertyBool", "texturable", "Whether the object is texturable", elm)
         self.setp(obj, "App::PropertyString", "staircaseCutOutShape", "", elm)
-        self.setp(obj, "App::PropertyFloat", "shininess", "The object's shininess", elm)
+        self.setp(obj, "App::PropertyPercent", "shininess", "The object's shininess", percent_sh2fc(elm.get('shininess', 0)))
         self.setp(obj, "App::PropertyFloat", "valueAddedTaxPercentage", "The object's VAT percentage", elm)
         self.setp(obj, "App::PropertyString", "currency", "The object's price currency", str(elm.get('currency', 'EUR')))
 
@@ -2358,8 +2379,17 @@ def _color_section(section):
 
 
 def set_shininess(obj, shininess):
+    # TODO: it seems a shininess of 0 means the wall loose its
+    # color. We leave it at the default setting untill a later time
+    return
     if not App.GuiUp or not shininess:
         return
-    if hasattr(obj.ViewObject, "Shininess"):
-        # Shininess goes from 0 -> 0.25 in SH3d and 0 -> 100 in FC
-        obj.ViewObject.Shininess = int((100*shininess)/0.25)
+    if hasattr(obj.ViewObject, "ShapeAppearance"):
+        mat = obj.ViewObject.ShapeAppearance[0]
+        mat.Shininess = float(shininess)/100
+        obj.ViewObject.ShapeAppearance = mat
+
+
+def percent_sh2fc(percent):
+    # percent goes from 0 -> 1 in SH3d and 0 -> 100 in FC
+    return int(float(percent)*100)
