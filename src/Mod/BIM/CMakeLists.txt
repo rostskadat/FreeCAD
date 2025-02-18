@@ -66,7 +66,9 @@ SET(importers_SRCS
     importers/exportIFCStructuralTools.py
     importers/exportIFC.py
     importers/exportIFCHelper.py
-    importers/samples/Sample.sh3d
+    importers/exportSH3D.py
+    importers/exportSH3DHelper.py
+    importers/SH3DCommons.py
 )
 
 SET(Dice3DS_SRCS
@@ -203,7 +205,7 @@ SET(BIMGuiIcon_SVG
 )
 
 SET(ImportersSample_Files
-    importers/samples/Sample.sh3d
+    importers/samples/00-empty.sh3d
 )
 
 ADD_CUSTOM_TARGET(BIM ALL

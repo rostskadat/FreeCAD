@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+  <class>Gui::Dialog::DlgSettingsArch</class>
+  <widget class="QWidget" name="Gui::Dialog::DlgSettingsArch">
+    <property name="geometry">
+      <rect>
+        <x>0</x>
+        <y>0</y>
+        <width>555</width>
+        <height>729</height>
+      </rect>
+    </property>
+    <property name="windowTitle">
+      <string>SH3D export</string>
+    </property>
+    <layout class="QVBoxLayout">
+      <property name="spacing">
+        <number>6</number>
+      </property>
+      <property name="margin">
+        <number>9</number>
+      </property>
+      <item>
+        <widget class="QGroupBox" name="groupBox_3">
+          <property name="title">
+            <string>General options</string>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayout_3">
+            <item>
+              <widget class="Gui::PrefCheckBox" name="checkBox_1">
+                <property name="text">
+                  <string>Show this dialog when importing</string>
+                </property>
+                <property name="prefEntry" stdset="0">
+                  <cstring>sh3dShowExportDialog</cstring>
+                </property>
+                <property name="prefPath" stdset="0">
+                  <cstring>Mod/Arch</cstring>
+                </property>
+                <property name="checked">
+                  <bool>true</bool>
+                </property>
+              </widget>
+            </item>
+            <item>
+              <widget class="Gui::PrefCheckBox" name="checkBox_3">
+                <property name="toolTip">
+                  <string>Whether to debug the export process</string>
+                </property>
+                <property name="text">
+                  <string>Debug</string>
+                </property>
+                <property name="prefEntry" stdset="0">
+                  <cstring>sh3dDebugExport</cstring>
+                </property>
+                <property name="prefPath" stdset="0">
+                  <cstring>Mod/Arch</cstring>
+                </property>
+                <property name="checked">
+                  <bool>true</bool>
+                </property>
+              </widget>
+            </item>
+          </layout>
+        </widget>
+      </item>
+      <item>
+        <widget class="QGroupBox" name="groupBox_2">
+          <property name="title">
+            <string>Export options</string>
+          </property>
+          <layout class="QVBoxLayout" name="verticalLayout">
+            <item>
+              <widget class="Gui::PrefCheckBox" name="checkBox_3">
+                <property name="toolTip">
+                  <string>Whether to export the model's doors and windows</string>
+                </property>
+                <property name="text">
+                  <string>Doors and Windows</string>
+                </property>
+                <property name="prefEntry" stdset="0">
+                  <cstring>sh3dExportDoorsAndWindows</cstring>
+                </property>
+                <property name="prefPath" stdset="0">
+                  <cstring>Mod/Arch</cstring>
+                </property>
+                <property name="checked">
+                  <bool>true</bool>
+                </property>
+              </widget>
+            </item>
+          </layout>
+        </widget>
+      </item>
+      <item>
+        <spacer name="verticalSpacer">
+          <property name="orientation">
+            <enum>Qt::Vertical</enum>
+          </property>
+          <property name="sizeHint" stdset="0">
+            <size>
+              <width>20</width>
+              <height>40</height>
+            </size>
+          </property>
+        </spacer>
+      </item>
+    </layout>
+  </widget>
+  <layoutdefault spacing="6" margin="11" />
+  <pixmapfunction>qPixmapFromMimeSource</pixmapfunction>
+  <customwidgets>
+    <customwidget>
+      <class>Gui::PrefSpinBox</class>
+      <extends>QSpinBox</extends>
+      <header>Gui/PrefWidgets.h</header>
+    </customwidget>
+    <customwidget>
+      <class>Gui::PrefCheckBox</class>
+      <extends>QCheckBox</extends>
+      <header>Gui/PrefWidgets.h</header>
+    </customwidget>
+    <customwidget>
+      <class>Gui::PrefComboBox</class>
+      <extends>QComboBox</extends>
+      <header>Gui/PrefWidgets.h</header>
+    </customwidget>
+    <customwidget>
+      <class>Gui::PrefLineEdit</class>
+      <extends>QLineEdit</extends>
+      <header>Gui/PrefWidgets.h</header>
+    </customwidget>
+  </customwidgets>
+  <resources />
+  <connections />
+</ui>

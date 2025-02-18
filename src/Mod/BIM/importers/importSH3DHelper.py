@@ -24,6 +24,7 @@ import numpy as np
 import math
 import os
 import re
+import shutil
 import traceback
 import uuid
 import xml.etree.ElementTree as ET
@@ -39,6 +40,7 @@ import Mesh
 import MeshPart
 import Part
 
+from BIM.importers.SH3DCommons import ang_sh2fc, coord_fc2sh, coord_sh2fc, dim_fc2sh, dim_sh2fc, color_fc2sh, color_sh2fc, set_fc_property
 from draftutils.messages import _err, _log, _msg, _wrn
 from draftutils.params import get_param_arch
 
@@ -65,9 +67,7 @@ except :
     RENDER_IS_AVAILABLE = False
 
 # SweetHome3D is in cm while FreeCAD is in mm
-FACTOR = 10
 DEFAULT_WALL_WIDTH = 100
-TOLERANCE = float(.1)
 DEFAULT_MATERIAL = App.Material(
     DiffuseColor=(1.00,0.00,0.00),
     AmbientColor=(0.33,0.33,0.33),
@@ -186,7 +186,7 @@ class SH3DImporter:
         self.handlers = {}
         self.total_object_count = 0
         self.current_object_count = 0
-        self.zip = None
+        self.tmp_dir = os.path.join(App.ActiveDocument.TransientDir, str(uuid.uuid4()))
         self.fc_objects = {}
         self.project = None
         self.site = None
@@ -223,20 +223,24 @@ class SH3DImporter:
             ValueError: if an invalid SH3D file is detected
         """
         self.filename = filename
-        if App.GuiUp and get_param_arch("sh3dShowDialog"):
-            Gui.showPreferences("Import-Export", 7)
+        if App.GuiUp and get_param_arch("sh3dShowImportDialog"):
+            Gui.showPreferences("Import-Export", 8)
 
         self._get_preferences()
         self._setup_handlers()
 
         if self.progress_bar:
             self.progress_bar.start(f"Importing SweetHome 3D file '{self.filename}'. Please wait ...", -1)
-        with zipfile.ZipFile(self.filename, 'r') as zip:
-            self.zip = zip
-            entries = zip.namelist()
-            if "Home.xml" not in entries:
-                raise ValueError(f"Invalid SweetHome3D file {self.filename}: missing Home.xml")
-            self._import_home(ET.fromstring(zip.read("Home.xml")))
+
+        try:
+            with zipfile.ZipFile(self.filename, 'r') as zip:
+                _msg(f"Extracting into {self.tmp_dir} ...")
+                if "Home.xml" not in zip.namelist():
+                    raise ValueError(f"Invalid SweetHome3D file {self.filename}: missing Home.xml")
+                zip.extractall(self.tmp_dir)
+            self._import_home(ET.parse(os.path.join(self.tmp_dir,"Home.xml")).getroot())
+        finally:
+            shutil.rmtree(self.tmp_dir)
 
     def _import_home(self, home):
         doc = App.ActiveDocument
@@ -262,6 +266,7 @@ class SH3DImporter:
             # previous import?
             if self.preferences["DEBUG"]: _log("No level defined. Using default level ...")
             self.default_floor = self.fc_objects.get('Level') if 'Level' in self.fc_objects else self._create_default_floor()
+            self.handlers['level'].create_groups(self.default_floor)
 
         # Importing <room> elements ...
         self._import_elements(home, ET_XPATH_ROOM)
@@ -340,6 +345,7 @@ class SH3DImporter:
             'CREATE_IFC_PROJECT': get_param_arch("sh3dCreateIFCProject"),
             'DEFAULT_FLOOR_COLOR': color_fc2sh(get_param_arch("sh3dDefaultFloorColor")),
             'DEFAULT_CEILING_COLOR': color_fc2sh(get_param_arch("sh3dDefaultCeilingColor")),
+            'DEFAULT_FURNITURE_COLOR': color_fc2sh(get_param_arch("sh3dDefaultFurnitureColor")),
             'CREATE_GROUND_MESH': get_param_arch("sh3dCreateGroundMesh"),
             'DEFAULT_GROUND_COLOR': color_fc2sh(get_param_arch("sh3dDefaultGroundColor")),
             'DEFAULT_SKY_COLOR': color_fc2sh(get_param_arch("sh3dDefaultSkyColor")),
@@ -374,57 +380,6 @@ class SH3DImporter:
         App.ActiveDocument.recompute()
         if App.GuiUp:
             Gui.updateGui()
-
-    def set_property(self, obj, type_, name, description, value, valid_values=None, group="SweetHome3D"):
-        """Set the attribute of the given object as an FC property
-
-        Note that the method has a default behavior when the value is not specified.
-
-        Args:
-            obj (object): The FC object to add a property to
-            type_ (str): the type of property to add
-            name (str): the name of the property to add
-            description (str): a short description of the property to add
-            value (xml.etree.ElementTree.Element|str): The property's value. Defaults to None.
-            valid_values (list): an optional list of valid values
-        """
-
-        self._add_property(obj, type_, name, description, group)
-        if valid_values:
-            setattr(obj, name, valid_values)
-        if value is None:
-            if self.preferences["DEBUG"]:_log(f"Setting obj.{name}=None")
-            return
-        if type(value) is ET.Element or type(value) is type(dict()):
-            if type_ == "App::PropertyString":
-                value = str(value.get(name, ""))
-            elif type_ == "App::PropertyFloat":
-                value = float(value.get(name, 0))
-            elif type_ == "App::PropertyQuantity":
-                value = float(value.get(name, 0))
-            elif type_ == "App::PropertyInteger":
-                value = int(value.get(name, 0))
-            elif type_ == "App::PropertyPercent":
-                value = int(value.get(name, 0))
-            elif type_ == "App::PropertyBool":
-                value = value.get(name, "true") == "true"
-        if self.preferences["DEBUG"]:
-            _log(f"Setting @{obj}.{name} = {value}")
-        setattr(obj, name, value)
-
-    def _add_property(self, obj, property_type, name, description, group="SweetHome3D"):
-        """Add an property to the FC object.
-
-        All properties will be added under the 'SweetHome3D' group
-
-        Args:
-            obj (object): TheFC object to add a property to
-            property_type (str): the type of property to add
-            name (str): the name of the property to add
-            description (str): a short description of the property to add
-        """
-        if name not in obj.PropertiesList:
-            obj.addProperty(property_type, name, group, description)
 
     def add_fc_objects(self, obj):
         """Register `obj`.
@@ -571,14 +526,14 @@ class SH3DImporter:
         """Create a default Arch::Project object
         """
         project = Arch.makeProject([])
-        self.set_property(project, "App::PropertyString", "id", "The element's id", "Project")
+        set_fc_property(project, "App::PropertyString", "id", "The element's id", "Project")
         return project
 
     def _create_site(self):
         """Create a default Arch::Site object
         """
         site = Arch.makeSite([])
-        self.set_property(site, "App::PropertyString", "id", "The element's id", "Site")
+        set_fc_property(site, "App::PropertyString", "id", "The element's id", "Site")
         return site
 
     def _create_building(self, elm):
@@ -591,12 +546,12 @@ class SH3DImporter:
             the Arch::Building
         """
         building = Arch.makeBuilding([])
-        self.set_property(building, "App::PropertyString", "shType", "The element type", 'building')
-        self.set_property(building, "App::PropertyString", "id", "The element's id", elm.get('name'))
+        set_fc_property(building, "App::PropertyString", "shType", "The element type", 'building')
+        set_fc_property(building, "App::PropertyString", "id", "The element's id", elm.get('name'))
         for property in elm.findall('property'):
-            name = re.sub('[^A-Za-z0-9]+', '', property.get('name'))
+            name = property.get('name')
             value = property.get('value')
-            self.set_property(building, "App::PropertyString", name, "", value)
+            set_fc_property(building, "App::PropertyString", name, "", value)
         return building
 
     def _create_default_floor(self):
@@ -616,18 +571,18 @@ class SH3DImporter:
         edge1 = Part.makeLine(NO, NE)
         edge2 = Part.makeLine(NE, SE)
         edge3 = Part.makeLine(SE, SO)
-        # ground = App.ActiveDocument.addObject("Part::Feature", "Ground")
         ground_face = Part.makeFace([ Part.Wire([edge0, edge1, edge2, edge3]) ])
 
         ground =  App.ActiveDocument.addObject("Mesh::Feature", "Ground")
         ground.Mesh = MeshPart.meshFromShape(Shape=ground_face, LinearDeflection=0.1, AngularDeflection=0.523599, Relative=False)
         ground.Label = "Ground"
 
+        _msg(f"DEFAULT_GROUND_COLOR={self.preferences['DEFAULT_GROUND_COLOR']}")
+        _msg(f"site.groundColor={self.site.groundColor}")
         set_color_and_transparency(ground, self.site.groundColor)
-        ground.ViewObject.Transparency = 50
         # TODO: apply possible <texture> within the <environment> element
 
-        self.site.addObject(ground)
+        self.site.Terrain = ground
 
     def _import_elements(self, parent, xpath):
         """Generic function to import a specific element.
@@ -679,60 +634,56 @@ class SH3DImporter:
         environments = elm.findall('environment')
         if len(environments) > 0:
             environment = environments[0]
-            ground_color = environment.get('groundColor',self.preferences["DEFAULT_GROUND_COLOR"])
-            sky_color = environment.get('ceilingColor', self.preferences["DEFAULT_SKY_COLOR"])
-            lightColor = environment.get('lightColor', self.preferences["DEFAULT_SKY_COLOR"])
-            ceillingLightColor = environment.get('ceillingLightColor', self.preferences["DEFAULT_SKY_COLOR"])
 
-            self.set_property(self.site, "App::PropertyString", "groundColor", "", ground_color)
-            self.set_property(self.site, "App::PropertyBool", "backgroundImageVisibleOnGround3D", "", environment)
-            self.set_property(self.site, "App::PropertyString", "skyColor", "", sky_color)
-            self.set_property(self.site, "App::PropertyString", "lightColor", "", lightColor)
-            self.set_property(self.site, "App::PropertyFloat", "wallsAlpha", "", environment)
-            self.set_property(self.site, "App::PropertyBool", "allLevelsVisible", "", environment)
-            self.set_property(self.site, "App::PropertyBool", "observerCameraElevationAdjusted", "", environment)
-            self.set_property(self.site, "App::PropertyString", "ceillingLightColor", "", ceillingLightColor)
-            self.set_property(self.site, "App::PropertyEnumeration", "drawingMode", "", str(environment.get('drawingMode', 'FILL')), valid_values=["FILL", "OUTLINE", "FILL_AND_OUTLINE"])
-            self.set_property(self.site, "App::PropertyFloat", "subpartSizeUnderLight", "", environment)
-            self.set_property(self.site, "App::PropertyInteger", "photoWidth", "", environment)
-            self.set_property(self.site, "App::PropertyInteger", "photoHeight", "", environment)
-            self.set_property(self.site, "App::PropertyEnumeration", "photoAspectRatio", "", str(environment.get('photoAspectRatio', 'VIEW_3D_RATIO')), valid_values=["FREE_RATIO", "VIEW_3D_RATIO", "RATIO_4_3", "RATIO_3_2", "RATIO_16_9", "RATIO_2_1", "RATIO_24_10", "SQUARE_RATIO"])
-            self.set_property(self.site, "App::PropertyInteger", "photoQuality", "", environment)
-            self.set_property(self.site, "App::PropertyInteger", "videoWidth", "", environment)
-            self.set_property(self.site, "App::PropertyEnumeration", "videoAspectRatio", "", str(environment.get('videoAspectRatio', 'RATIO_4_3')), valid_values=["RATIO_4_3", "RATIO_16_9", "RATIO_24_10"])
-            self.set_property(self.site, "App::PropertyInteger", "photoQuality", "", environment)
-            self.set_property(self.site, "App::PropertyInteger", "videoQuality", "", environment)
-            self.set_property(self.site, "App::PropertyString", "videoSpeed", "", environment)
-            self.set_property(self.site, "App::PropertyInteger", "videoFrameRate", "", environment)
+            set_fc_property(self.site, "App::PropertyColor", "groundColor", "", environment, default_value=self.preferences["DEFAULT_GROUND_COLOR"])
+            set_fc_property(self.site, "App::PropertyBool", "backgroundImageVisibleOnGround3D", "", environment)
+            set_fc_property(self.site, "App::PropertyColor", "skyColor", "", environment, default_value=self.preferences["DEFAULT_SKY_COLOR"])
+            set_fc_property(self.site, "App::PropertyColor", "lightColor", "", environment, default_value=self.preferences["DEFAULT_SKY_COLOR"])
+            set_fc_property(self.site, "App::PropertyFloat", "wallsAlpha", "", environment)
+            set_fc_property(self.site, "App::PropertyBool", "allLevelsVisible", "", environment)
+            set_fc_property(self.site, "App::PropertyBool", "observerCameraElevationAdjusted", "", environment)
+            set_fc_property(self.site, "App::PropertyColor", "ceillingLightColor", "", environment, default_value=self.preferences["DEFAULT_SKY_COLOR"])
+            set_fc_property(self.site, "App::PropertyEnumeration", "drawingMode", "", str(environment.get('drawingMode', 'FILL')), valid_values=["FILL", "OUTLINE", "FILL_AND_OUTLINE"])
+            set_fc_property(self.site, "App::PropertyFloat", "subpartSizeUnderLight", "", environment)
+            set_fc_property(self.site, "App::PropertyInteger", "photoWidth", "", environment)
+            set_fc_property(self.site, "App::PropertyInteger", "photoHeight", "", environment)
+            set_fc_property(self.site, "App::PropertyEnumeration", "photoAspectRatio", "", str(environment.get('photoAspectRatio', 'VIEW_3D_RATIO')), valid_values=["FREE_RATIO", "VIEW_3D_RATIO", "RATIO_4_3", "RATIO_3_2", "RATIO_16_9", "RATIO_2_1", "RATIO_24_10", "SQUARE_RATIO"])
+            set_fc_property(self.site, "App::PropertyInteger", "photoQuality", "", environment)
+            set_fc_property(self.site, "App::PropertyInteger", "videoWidth", "", environment)
+            set_fc_property(self.site, "App::PropertyEnumeration", "videoAspectRatio", "", str(environment.get('videoAspectRatio', 'RATIO_4_3')), valid_values=["RATIO_4_3", "RATIO_16_9", "RATIO_24_10"])
+            set_fc_property(self.site, "App::PropertyInteger", "photoQuality", "", environment)
+            set_fc_property(self.site, "App::PropertyInteger", "videoQuality", "", environment)
+            set_fc_property(self.site, "App::PropertyString", "videoSpeed", "", environment)
+            set_fc_property(self.site, "App::PropertyInteger", "videoFrameRate", "", environment)
         else:
             _msg(f"No <environment> tag found in <{elm.tag}>")
 
         bg_imgs = elm.findall('backgroundImage')
         if len(bg_imgs) > 0:
             bg_img = bg_imgs[0]
-            self.set_property(self.site, "App::PropertyString", "image", "", bg_img)
-            self.set_property(self.site, "App::PropertyFloat", "scaleDistance", "", bg_img)
-            self.set_property(self.site, "App::PropertyFloat", "scaleDistanceXStart", "", bg_img)
-            self.set_property(self.site, "App::PropertyFloat", "scaleDistanceYStart", "", bg_img)
-            self.set_property(self.site, "App::PropertyFloat", "scaleDistanceXEnd", "", bg_img)
-            self.set_property(self.site, "App::PropertyFloat", "scaleDistanceYEnd", "", bg_img)
-            self.set_property(self.site, "App::PropertyFloat", "xOrigin", "", bg_img)
-            self.set_property(self.site, "App::PropertyFloat", "yOrigin", "", bg_img)
-            self.set_property(self.site, "App::PropertyBool", "visible", "Whether the background image is visible", bg_img)
+            set_fc_property(self.site, "App::PropertyString", "image", "", bg_img)
+            set_fc_property(self.site, "App::PropertyFloat", "scaleDistance", "", bg_img)
+            set_fc_property(self.site, "App::PropertyFloat", "scaleDistanceXStart", "", bg_img)
+            set_fc_property(self.site, "App::PropertyFloat", "scaleDistanceYStart", "", bg_img)
+            set_fc_property(self.site, "App::PropertyFloat", "scaleDistanceXEnd", "", bg_img)
+            set_fc_property(self.site, "App::PropertyFloat", "scaleDistanceYEnd", "", bg_img)
+            set_fc_property(self.site, "App::PropertyFloat", "xOrigin", "", bg_img)
+            set_fc_property(self.site, "App::PropertyFloat", "yOrigin", "", bg_img)
+            set_fc_property(self.site, "App::PropertyBool", "visible", "Whether the background image is visible", bg_img)
         else:
             _msg(f"No <backgroundImage> tag found in <{elm.tag}>")
 
         compasses = elm.findall('compass')
         if len(compasses) > 0:
             compass = compasses[0]
-            self.set_property(self.site, "App::PropertyFloat", "x", "The compass's x", compass)
-            self.set_property(self.site, "App::PropertyFloat", "y", "The compass's y", compass)
-            self.set_property(self.site, "App::PropertyFloat", "diameter", "The compass's diameter in cm", compass)
-            self.set_property(self.site, "App::PropertyFloat", "northDirection", "The compass's angle to the north in degree", compass)
-            self.set_property(self.site, "App::PropertyFloat", "longitude", "The compass's longitude", compass)
-            self.set_property(self.site, "App::PropertyFloat", "latitude", "The compass's latitude", compass)
-            self.set_property(self.site, "App::PropertyString", "timeZone", "The compass's TimeZone", compass)
-            self.set_property(self.site, "App::PropertyBool", "visible", "Whether the compass is visible", compass)
+            set_fc_property(self.site, "App::PropertyFloat", "x", "The compass's x", compass)
+            set_fc_property(self.site, "App::PropertyFloat", "y", "The compass's y", compass)
+            set_fc_property(self.site, "App::PropertyLength", "diameter", "The compass's diameter in cm", compass)
+            set_fc_property(self.site, "App::PropertyAngle", "northDirection", "The compass's angle to the north in degree", compass)
+            set_fc_property(self.site, "App::PropertyFloat", "longitude", "The compass's longitude", compass)
+            set_fc_property(self.site, "App::PropertyFloat", "latitude", "The compass's latitude", compass)
+            set_fc_property(self.site, "App::PropertyString", "timeZone", "The compass's TimeZone", compass)
+            set_fc_property(self.site, "App::PropertyBool", "visible", "Whether the compass is visible", compass)
             self.site.Declination = ang_sh2fc(math.degrees(float(self.site.northDirection)))
             self.site.Longitude = math.degrees(float(self.site.longitude))
             self.site.Latitude = math.degrees(float(self.site.latitude))
@@ -792,21 +743,6 @@ class BaseHandler:
 
     def __init__(self, importer: SH3DImporter):
         self.importer = importer
-
-    def setp(self, obj, type_, name, description, value=None, valid_values=None):
-        """Set a property on the object
-
-        Args:
-            obj (FreeCAD): the object on which to set the property
-            type_ (str): the property type
-            name (str): the property name
-            description (str): the property description
-            value (xml.etree.ElementTree.Element|str, optional): The
-                property's value. Defaults to None.
-            valid_values (list, optional): The property's enumerated values.
-                Defaults to None.
-        """
-        self.importer.set_property(obj, type_, name, description, value, valid_values)
 
     def get_fc_object(self, id, sh_type):
         """Returns the FC object with the specified id and sh_type
@@ -904,7 +840,7 @@ class LevelHandler(BaseHandler):
         floor.Height = dim_sh2fc(float(elm.get('height')))
         self._set_properties(floor, elm)
         floor.Visibility = elm.get('visible', 'true') == 'true'
-        self._create_groups(floor)
+        self.create_groups(floor)
         self.importer.add_floor(floor)
 
     def create_default_floor(self):
@@ -914,43 +850,44 @@ class LevelHandler(BaseHandler):
         floor.Height = 2500
 
         self._set_properties(floor, dict({'shType': 'level', 'id':'Level', 'floorThickness':25, 'elevationIndex': 0, 'viewable': True}))
-        self._create_groups(floor)
+        self.create_groups(floor)
         self.importer.add_floor(floor)
 
         return floor
 
     def _set_properties(self, obj, elm):
-        self.setp(obj, "App::PropertyString", "shType", "The element type", 'level')
-        self.setp(obj, "App::PropertyString", "id", "The floor's id", elm)
-        self.setp(obj, "App::PropertyQuantity", "floorThickness", "The floor's slab thickness", dim_sh2fc(float(elm.get('floorThickness'))))
-        self.setp(obj, "App::PropertyInteger", "elevationIndex", "The floor number", elm)
-        self.setp(obj, "App::PropertyBool", "viewable", "Whether the floor is viewable", elm)
+        set_fc_property(obj, "App::PropertyString", "shType", "The element type", 'level')
+        set_fc_property(obj, "App::PropertyString", "id", "The floor's id", elm)
+        set_fc_property(obj, "App::PropertyLength", "floorThickness", "The floor's slab thickness", dim_sh2fc(float(elm.get('floorThickness'))))
+        set_fc_property(obj, "App::PropertyInteger", "elevationIndex", "The floor number", elm)
+        set_fc_property(obj, "App::PropertyBool", "viewable", "Whether the floor is viewable", elm)
 
-    def _create_groups(self, floor):
+    def create_groups(self, floor):
         # This is a special group that does not appear in the TreeView.
         group = floor.newObject("App::DocumentObjectGroup")
         group.Label = f"References-{floor.Label}"
-        self.setp(floor, "App::PropertyString", "ReferenceFacesGroupName", "The DocumentObjectGroup name for all Reference Faces on this floor", group.Name)
+        set_fc_property(floor, "App::PropertyString", "ReferenceFacesGroupName", "The DocumentObjectGroup name for all Reference Faces on this floor", group.Name)
         group.Visibility = False
         group.ViewObject.ShowInTree = False
 
         if self.importer.preferences["DECORATE_SURFACES"]:
             group = floor.newObject("App::DocumentObjectGroup")
             group.Label = f"Decoration-{floor.Label}-Walls"
-            self.setp(floor, "App::PropertyString", "DecorationWallsGroupName", "The DocumentObjectGroup name for all wall decorations on this floor", group.Name)
+            set_fc_property(floor, "App::PropertyString", "DecorationWallsGroupName", "The DocumentObjectGroup name for all wall decorations on this floor", group.Name)
             group = floor.newObject("App::DocumentObjectGroup")
             group.Label = f"Decoration-{floor.Label}-Ceilings"
-            self.setp(floor, "App::PropertyString", "DecorationCeilingsGroupName", "The DocumentObjectGroup name for all ceilings decoration on this floor", group.Name)
+            set_fc_property(floor, "App::PropertyString", "DecorationCeilingsGroupName", "The DocumentObjectGroup name for all ceilings decoration on this floor", group.Name)
             group = floor.newObject("App::DocumentObjectGroup")
             group.Label = f"Decoration-{floor.Label}-Floors"
-            self.setp(floor, "App::PropertyString", "DecorationFloorsGroupName", "The DocumentObjectGroup name for all floors decoration on this floor", group.Name)
+            set_fc_property(floor, "App::PropertyString", "DecorationFloorsGroupName", "The DocumentObjectGroup name for all floors decoration on this floor", group.Name)
             group = floor.newObject("App::DocumentObjectGroup")
             group.Label = f"Decoration-{floor.Label}-Baseboards"
-            self.setp(floor, "App::PropertyString", "DecorationBaseboardsGroupName", "The DocumentObjectGroup name for all baseboards on this floor", group.Name)
+            set_fc_property(floor, "App::PropertyString", "DecorationBaseboardsGroupName", "The DocumentObjectGroup name for all baseboards on this floor", group.Name)
 
         if self.importer.preferences["IMPORT_FURNITURES"]:
-            group = floor.newObject("App::DocumentObjectGroup", f"Furnitures-{floor.Label}")
-            self.setp(floor, "App::PropertyString", "FurnitureGroupName", "The DocumentObjectGroup name for all furnitures in this floor", group.Name)
+            group = floor.newObject("App::DocumentObjectGroup")
+            group.Label = f"Furniture-{floor.Label}"
+            set_fc_property(floor, "App::PropertyString", "FurnitureGroupName", "The DocumentObjectGroup name for all furnitures in this floor", group.Name)
 
     def create_slabs(self, floor):
         """Creates a Arch.Slab for the given floor.
@@ -1080,13 +1017,15 @@ class RoomHandler(BaseHandler):
             reference_face = Draft.make_wire(points, closed=True, face=True, support=None)
             reference_face.Label = elm.get('name', 'Room') + '-reference'
             reference_face.Visibility = False
-            reference_face.recompute()
+            reference_face.recompute(True)
             floor.getObject(floor.ReferenceFacesGroupName).addObject(reference_face)
 
             # NOTE: for room to properly display and calculate the area, the
             # Base object can not be a face but must have a height...
             footprint = App.ActiveDocument.addObject("Part::Feature", "Footprint")
             footprint.Shape = reference_face.Shape.extrude(Z_NORM)
+            footprint.Visibility = False
+            footprint.ViewObject.ShowInTree = False
             footprint.Label = elm.get('name', 'Room') + '-footprint'
 
             space = Arch.makeSpace(footprint)
@@ -1095,8 +1034,8 @@ class RoomHandler(BaseHandler):
             self._set_properties(space, elm)
 
             space.setExpression('ElevationWithFlooring', f"{footprint.Name}.Shape.BoundBox.ZMin")
-            self.setp(space, "App::PropertyLink", "ReferenceFace", "The Reference Part.Face", reference_face)
-            self.setp(space, "App::PropertyString", "ReferenceFloorName", "The name of the Arch.Floor this room belongs to", floor.Name)
+            set_fc_property(space, "App::PropertyLink", "ReferenceFace", "The Reference Part.Face", reference_face)
+            set_fc_property(space, "App::PropertyString", "ReferenceFloorName", "The name of the Arch.Floor this room belongs to", floor.Name)
 
         self.importer.add_space(floor, space)
 
@@ -1105,25 +1044,22 @@ class RoomHandler(BaseHandler):
         floor.addObject(space)
 
     def _set_properties(self, obj, elm):
-        floor_color = elm.get('floorColor',self.importer.preferences["DEFAULT_FLOOR_COLOR"])
-        ceiling_color = elm.get('ceilingColor', self.importer.preferences["DEFAULT_CEILING_COLOR"])
-
-        self.setp(obj, "App::PropertyString", "shType", "The element type", 'room')
-        self.setp(obj, "App::PropertyString", "id", "The slab's id", elm.get('id', str(uuid.uuid4())))
-        self.setp(obj, "App::PropertyFloat", "nameAngle", "The room's name angle", elm)
-        self.setp(obj, "App::PropertyFloat", "nameXOffset", "The room's name x offset", elm)
-        self.setp(obj, "App::PropertyFloat", "nameYOffset", "The room's name y offset", elm)
-        self.setp(obj, "App::PropertyBool", "areaVisible", "Whether the area of the room is displayed in the plan view", elm)
-        self.setp(obj, "App::PropertyFloat", "areaAngle", "The room's area annotation angle", elm)
-        self.setp(obj, "App::PropertyFloat", "areaXOffset", "The room's area annotation x offset", elm)
-        self.setp(obj, "App::PropertyFloat", "areaYOffset", "The room's area annotation y offset", elm)
-        self.setp(obj, "App::PropertyBool", "floorVisible", "Whether the floor of the room is displayed", elm)
-        self.setp(obj, "App::PropertyString", "floorColor", "The room's floor color", floor_color)
-        self.setp(obj, "App::PropertyPercent", "floorShininess", "The room's floor shininess", percent_sh2fc(elm.get('floorShininess', 0)))
-        self.setp(obj, "App::PropertyBool", "ceilingVisible", "Whether the ceiling of the room is displayed", elm)
-        self.setp(obj, "App::PropertyString", "ceilingColor", "The room's ceiling color", ceiling_color)
-        self.setp(obj, "App::PropertyPercent", "ceilingShininess", "The room's ceiling shininess", percent_sh2fc(elm.get('ceilingShininess', 0)))
-        self.setp(obj, "App::PropertyBool", "ceilingFlat", "", elm)
+        set_fc_property(obj, "App::PropertyString", "shType", "The element type", 'room')
+        set_fc_property(obj, "App::PropertyString", "id", "The slab's id", elm.get('id', str(uuid.uuid4())))
+        set_fc_property(obj, "App::PropertyAngle", "nameAngle", "The room's name angle", elm)
+        set_fc_property(obj, "App::PropertyLength", "nameXOffset", "The room's name x offset", elm)
+        set_fc_property(obj, "App::PropertyLength", "nameYOffset", "The room's name y offset", elm)
+        set_fc_property(obj, "App::PropertyBool", "areaVisible", "Whether the area of the room is displayed in the plan view", elm)
+        set_fc_property(obj, "App::PropertyAngle", "areaAngle", "The room's area annotation angle", elm)
+        set_fc_property(obj, "App::PropertyLength", "areaXOffset", "The room's area annotation x offset", elm)
+        set_fc_property(obj, "App::PropertyLength", "areaYOffset", "The room's area annotation y offset", elm)
+        set_fc_property(obj, "App::PropertyBool", "floorVisible", "Whether the floor of the room is displayed", elm)
+        set_fc_property(obj, "App::PropertyColor", "floorColor", "The room's floor color", elm, default_value=self.importer.preferences["DEFAULT_FLOOR_COLOR"])
+        set_fc_property(obj, "App::PropertyPercent", "floorShininess", "The room's floor shininess", elm)
+        set_fc_property(obj, "App::PropertyBool", "ceilingVisible", "Whether the ceiling of the room is displayed", elm)
+        set_fc_property(obj, "App::PropertyColor", "ceilingColor", "The room's ceiling color", elm, default_value=self.importer.preferences["DEFAULT_CEILING_COLOR"])
+        set_fc_property(obj, "App::PropertyPercent", "ceilingShininess", "The room's ceiling shininess", elm)
+        set_fc_property(obj, "App::PropertyBool", "ceilingFlat", "", elm)
 
     def post_process(self, obj):
         if self.importer.preferences["DECORATE_SURFACES"]:
@@ -1148,9 +1084,9 @@ class RoomHandler(BaseHandler):
         set_color_and_transparency(facebinder, getattr(space, f"{side}Color"))
         set_shininess(facebinder, getattr(space, f"{side}Shininess", 0))
 
-        self.setp(facebinder, "App::PropertyString", "shType", "The element type", 'facebinder')
-        self.setp(facebinder, "App::PropertyString", "id", "The element's id", facebinder_id)
-        self.setp(facebinder, "App::PropertyString", "ReferenceRoomName", "The Reference Arch.Space", space.Name)
+        set_fc_property(facebinder, "App::PropertyString", "shType", "The element type", 'facebinder')
+        set_fc_property(facebinder, "App::PropertyString", "id", "The element's id", facebinder_id)
+        set_fc_property(facebinder, "App::PropertyString", "ReferenceRoomName", "The Reference Arch.Space", space.Name)
 
         group_name = getattr(floor, "DecorationFloorsGroupName") if (side == "floor") else getattr(floor, "DecorationCeilingsGroupName")
         floor.getObject(group_name).addObject(facebinder)
@@ -1192,7 +1128,7 @@ class WallHandler(BaseHandler):
         wall.Base.Label = f"wall{i}-wallshape"
         self._set_properties(wall, elm)
         self._set_baseboard_properties(wall, elm)
-        self.setp(wall, "App::PropertyString", "ReferenceFloorName", "The Name of the Arch.Floor this walls belongs to", floor.Name)
+        set_fc_property(wall, "App::PropertyString", "ReferenceFloorName", "The Name of the Arch.Floor this walls belongs to", floor.Name)
 
         wall.recompute(True)
 
@@ -1215,21 +1151,16 @@ class WallHandler(BaseHandler):
         return sibling_wall
 
     def _set_properties(self, obj, elm):
-
-        top_color = elm.get('topColor', self.importer.preferences["DEFAULT_FLOOR_COLOR"])
-        left_side_color = elm.get('leftSideColor', self.importer.preferences["DEFAULT_FLOOR_COLOR"])
-        right_side_color = elm.get('rightSideColor', self.importer.preferences["DEFAULT_FLOOR_COLOR"])
-
-        self.setp(obj, "App::PropertyString", "shType", "The element type", 'wall')
-        self.setp(obj, "App::PropertyString", "id", "The wall's id", elm)
-        self.setp(obj, "App::PropertyString", "wallAtStart", "The Id of the contiguous wall at the start of this wall", elm)
-        self.setp(obj, "App::PropertyString", "wallAtEnd", "The Id of the contiguous wall at the end of this wall", elm)
-        self.setp(obj, "App::PropertyString", "pattern", "The pattern of this wall in plan view", elm)
-        self.setp(obj, "App::PropertyString", "topColor", "The wall inner color", top_color)
-        self.setp(obj, "App::PropertyString", "leftSideColor", "The wall inner color", left_side_color)
-        self.setp(obj, "App::PropertyPercent","leftSideShininess", "The room's ceiling shininess", percent_sh2fc(elm.get('leftSideShininess', 0)))
-        self.setp(obj, "App::PropertyString", "rightSideColor", "The wall inner color", right_side_color)
-        self.setp(obj, "App::PropertyPercent","rightSideShininess", "The room's ceiling shininess", percent_sh2fc(elm.get('rightSideShininess', 0)))
+        set_fc_property(obj, "App::PropertyString", "shType", "The element type", 'wall')
+        set_fc_property(obj, "App::PropertyString", "id", "The wall's id", elm)
+        set_fc_property(obj, "App::PropertyString", "wallAtStart", "The Id of the contiguous wall at the start of this wall", elm)
+        set_fc_property(obj, "App::PropertyString", "wallAtEnd", "The Id of the contiguous wall at the end of this wall", elm)
+        set_fc_property(obj, "App::PropertyString", "pattern", "The pattern of this wall in plan view", elm)
+        set_fc_property(obj, "App::PropertyColor", "topColor", "The wall inner color", elm, default_value=self.importer.preferences["DEFAULT_FLOOR_COLOR"])
+        set_fc_property(obj, "App::PropertyColor", "leftSideColor", "The wall inner color", elm, default_value=self.importer.preferences["DEFAULT_FLOOR_COLOR"])
+        set_fc_property(obj, "App::PropertyPercent","leftSideShininess", "The room's ceiling shininess", elm)
+        set_fc_property(obj, "App::PropertyColor", "rightSideColor", "The wall inner color", elm, default_value=self.importer.preferences["DEFAULT_FLOOR_COLOR"])
+        set_fc_property(obj, "App::PropertyPercent","rightSideShininess", "The room's ceiling shininess", elm)
 
     def _set_baseboard_properties(self, obj, elm):
         # Baseboard are a little bit special:
@@ -1238,9 +1169,9 @@ class WallHandler(BaseHandler):
         # creation is delayed until the
         for baseboard in elm.findall('baseboard'):
             side = baseboard.get('attribute')
-            self.setp(obj, "App::PropertyQuantity", f"{side}Thickness", f"The thickness of the {side} baseboard", dim_sh2fc(float(baseboard.get("thickness"))))
-            self.setp(obj, "App::PropertyQuantity", f"{side}Height", f"The height of the {side} baseboard", dim_sh2fc(float(baseboard.get("height"))))
-            self.setp(obj, "App::PropertyString", f"{side}Color", f"The color of the {side} baseboard", baseboard.get("color"))
+            set_fc_property(obj, "App::PropertyLength", f"{side}Thickness", f"The thickness of the {side} baseboard", dim_sh2fc(float(baseboard.get("thickness"))))
+            set_fc_property(obj, "App::PropertyLength", f"{side}Height", f"The height of the {side} baseboard", dim_sh2fc(float(baseboard.get("height"))))
+            set_fc_property(obj, "App::PropertyColor", f"{side}Color", f"The color of the {side} baseboard", baseboard, default_value=self.importer.preferences["DEFAULT_FLOOR_COLOR"])
 
     def _create_wall(self, floor, prev, next, elm):
         """Create an Arch::Structure from an SH3D Element.
@@ -1298,12 +1229,16 @@ class WallHandler(BaseHandler):
             wall = Arch.makeWall(sweep)
 
         # Keep track of base objects. Used to decorate walls
-        self.importer.set_property(wall, "App::PropertyLinkList", "BaseObjects", "The different base objects whose sweep failed. Kept for compatibility reasons", [section_start, section_end, spine])
+        set_fc_property(wall, "App::PropertyLinkList", "BaseObjects", "The different base objects whose sweep failed. Kept for compatibility reasons", [section_start, section_end, spine])
 
         # TODO: Width is incorrect when joining walls
         wall.setExpression('Length', f'{spine.Name}.Length')
         wall.setExpression('Width', f'({section_start.Name}.Length + {section_end.Name}.Length) / 2')
         wall.setExpression('Height', f'({section_start.Name}.Height + {section_end.Name}.Height) / 2')
+        # wall.setExpression('xStart', f"{section_start.Name}.Placement.Base.x")
+        # wall.setExpression('yStart', f"{section_start.Name}.Placement.Base.y")
+        # wall.setExpression('xEnd', f"{section_end.Name}.Placement.Base.x")
+        # wall.setExpression('yEnd', f"{section_end.Name}.Placement.Base.y")
 
         return wall, base_object
 
@@ -1447,11 +1382,11 @@ class WallHandler(BaseHandler):
 
         # The Length property is used in the Wall to calculate volume, etc...
         # Since make Circle does not calculate this Length I calculate it here...
-        self.importer.set_property(spine, "App::PropertyFloat", "Length", "The length of the Arc", length, group="Draft")
+        set_fc_property(spine, "App::PropertyLength", "Length", "The length of the Arc", length, group="Draft")
         # The Start and End property are used in the Wall to determine Facebinders
         # characteristics...
-        self.importer.set_property(spine, "App::PropertyVector", "Start", "The start point of the Arc", start, group="Draft")
-        self.importer.set_property(spine, "App::PropertyVector", "End", "The end point of the Arc", end, group="Draft")
+        set_fc_property(spine, "App::PropertyPlacement", "Start", "The start point of the Arc", start, group="Draft")
+        set_fc_property(spine, "App::PropertyPlacement", "End", "The end point of the Arc", end, group="Draft")
 
         spine.Label = f"Spine"
         App.ActiveDocument.recompute([section_start, section_end, spine])
@@ -1652,8 +1587,7 @@ class WallHandler(BaseHandler):
             right_face_name (str): the name of the right face suitable for selecting
         """
         # The top color is the color of the "mass" of the wall
-        top_color = wall.topColor
-        set_color_and_transparency(wall, top_color)
+        set_color_and_transparency(wall, color_sh2fc(wall.topColor))
         self._create_facebinder(floor, wall,left_face_name,  "left")
         self._create_facebinder(floor, wall, right_face_name,  "right")
 
@@ -1669,13 +1603,13 @@ class WallHandler(BaseHandler):
                 facebinder.Extrusion = 1
                 facebinder.Label = wall.Label + f" {side} side finish"
 
-            color = getattr(wall, f"{side}SideColor")
+            color = color_sh2fc(getattr(wall, f"{side}SideColor"))
             set_color_and_transparency(facebinder, color)
             shininess = getattr(wall, f"{side}SideShininess", 0)
             set_shininess(facebinder, shininess)
-            self.setp(facebinder, "App::PropertyString", "shType", "The element type", 'facebinder')
-            self.setp(facebinder, "App::PropertyString", "id", "The element's id", facebinder_id)
-            self.setp(facebinder, "App::PropertyString", "ReferenceWallName", "The element's wall Name", wall.Name)
+            set_fc_property(facebinder, "App::PropertyString", "shType", "The element type", 'facebinder')
+            set_fc_property(facebinder, "App::PropertyString", "id", "The element's id", facebinder_id)
+            set_fc_property(facebinder, "App::PropertyString", "ReferenceWallName", "The element's wall Name", wall.Name)
 
             floor.getObject(floor.DecorationWallsGroupName).addObject(facebinder)
         else:
@@ -1754,11 +1688,11 @@ class WallHandler(BaseHandler):
         baseboard.TaperAngle = 0
         baseboard.TaperAngleRev = 0
 
-        set_color_and_transparency(baseboard, getattr(wall, f"{side}Color"))
+        set_color_and_transparency(baseboard, color_sh2fc(getattr(wall, f"{side}Color")))
 
-        self.setp(baseboard, "App::PropertyString", "shType", "The element type", 'baseboard')
-        self.setp(baseboard, "App::PropertyString", "id", "The element's id", baseboard_id)
-        self.setp(baseboard, "App::PropertyString", "ReferenceWallName", "The element's wall Name", wall.Name)
+        set_fc_property(baseboard, "App::PropertyString", "shType", "The element type", 'baseboard')
+        set_fc_property(baseboard, "App::PropertyString", "id", "The element's id", baseboard_id)
+        set_fc_property(baseboard, "App::PropertyString", "ReferenceWallName", "The element's wall Name", wall.Name)
 
         baseboard.recompute(True)
         floor.getObject(floor.DecorationBaseboardsGroupName).addObject(baseboard)
@@ -1836,68 +1770,65 @@ class BaseFurnitureHandler(BaseHandler):
         super().__init__(importer)
 
     def set_furniture_common_properties(self, obj, elm):
-        self.setp(obj, "App::PropertyString", "id", "The furniture's id", elm)
-        self.setp(obj, "App::PropertyString", "name", "The furniture's name", elm)
-        self.setp(obj, "App::PropertyFloat", "angle", "The angle of the furniture", elm)
-        self.setp(obj, "App::PropertyBool", "visible", "Whether the object is visible", elm)
-        self.setp(obj, "App::PropertyBool", "movable", "Whether the object is movable", elm)
-        self.setp(obj, "App::PropertyString", "description", "The object's description", elm)
-        self.setp(obj, "App::PropertyString", "information", "The object's information", elm)
-        self.setp(obj, "App::PropertyString", "license", "The object's license", elm)
-        self.setp(obj, "App::PropertyString", "creator", "The object's creator", elm)
-        self.setp(obj, "App::PropertyBool", "modelMirrored", "Whether the object is mirrored", bool(elm.get('modelMirrored', False)))
-        self.setp(obj, "App::PropertyBool", "nameVisible", "Whether the object's name is visible", bool(elm.get('nameVisible', False)))
-        self.setp(obj, "App::PropertyFloat", "nameAngle", "The object's name angle", elm)
-        self.setp(obj, "App::PropertyFloat", "nameXOffset", "The object's name X offset", elm)
-        self.setp(obj, "App::PropertyFloat", "nameYOffset", "The object's name Y offset", elm)
-        self.setp(obj, "App::PropertyFloat", "price", "The object's price", elm)
+        set_fc_property(obj, "App::PropertyString", "id", "The furniture's id", elm)
+        set_fc_property(obj, "App::PropertyString", "name", "The furniture's name", elm)
+        set_fc_property(obj, "App::PropertyAngle", "angle", "The angle of the furniture", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyBool", "visible", "Whether the object is visible", elm, default_value=True)
+        set_fc_property(obj, "App::PropertyBool", "movable", "Whether the object is movable", elm, default_value=True)
+        set_fc_property(obj, "App::PropertyString", "description", "The object's description", elm)
+        set_fc_property(obj, "App::PropertyString", "information", "The object's information", elm)
+        set_fc_property(obj, "App::PropertyString", "license", "The object's license", elm)
+        set_fc_property(obj, "App::PropertyString", "creator", "The object's creator", elm)
+        set_fc_property(obj, "App::PropertyBool", "modelMirrored", "Whether the object is mirrored", elm, default_value=False)
+        set_fc_property(obj, "App::PropertyBool", "nameVisible", "Whether the object's name is visible", elm, default_value=False)
+        set_fc_property(obj, "App::PropertyAngle", "nameAngle", "The object's name angle", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyLength", "nameXOffset", "The object's name X offset", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyLength", "nameYOffset", "The object's name Y offset", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyFloat", "price", "The object's price", elm)
 
     def set_piece_of_furniture_common_properties(self, obj, elm):
-        self.setp(obj, "App::PropertyString", "level", "The furniture's level", elm)
-        self.setp(obj, "App::PropertyString", "catalogId", "The furniture's catalog id", elm)
-        self.setp(obj, "App::PropertyFloat", "dropOnTopElevation", "", elm)
-        self.setp(obj, "App::PropertyString", "model", "The object's mesh file", elm)
-        self.setp(obj, "App::PropertyString", "icon", "The object's icon", elm)
-        self.setp(obj, "App::PropertyString", "planIcon", "The object's icon for the plan view", elm)
-        self.setp(obj, "App::PropertyString", "modelRotation", "The object's model rotation", elm)
-        self.setp(obj, "App::PropertyString", "modelCenteredAtOrigin", "The object's center", elm)
-        self.setp(obj, "App::PropertyBool", "backFaceShown", "Whether the object's back face is shown", elm)
-        self.setp(obj, "App::PropertyString", "modelFlags", "The object's flags", elm)
-        self.setp(obj, "App::PropertyFloat", "modelSize", "The object's size", elm)
-        self.setp(obj, "App::PropertyBool", "doorOrWindow", "Whether the object is a door or Window", bool(elm.get('doorOrWindow', False)))
-        self.setp(obj, "App::PropertyBool", "resizable", "Whether the object is resizable", elm)
-        self.setp(obj, "App::PropertyBool", "deformable", "Whether the object is deformable", elm)
-        self.setp(obj, "App::PropertyBool", "texturable", "Whether the object is texturable", elm)
-        self.setp(obj, "App::PropertyString", "staircaseCutOutShape", "", elm)
-        self.setp(obj, "App::PropertyPercent", "shininess", "The object's shininess", percent_sh2fc(elm.get('shininess', 0)))
-        self.setp(obj, "App::PropertyFloat", "valueAddedTaxPercentage", "The object's VAT percentage", elm)
-        self.setp(obj, "App::PropertyString", "currency", "The object's price currency", str(elm.get('currency', 'EUR')))
+        set_fc_property(obj, "App::PropertyString", "level", "The furniture's level", elm)
+        set_fc_property(obj, "App::PropertyString", "catalogId", "The furniture's catalog id", elm)
+        set_fc_property(obj, "App::PropertyLength", "dropOnTopElevation", "", elm, default_value=1.0)
+        set_fc_property(obj, "App::PropertyString", "model", "The object's mesh file", elm)
+        set_fc_property(obj, "App::PropertyString", "icon", "The object's icon", elm)
+        set_fc_property(obj, "App::PropertyString", "planIcon", "The object's icon for the plan view", elm)
+        set_fc_property(obj, "App::PropertyString", "modelRotation", "The object's model rotation", elm, default_value="1 0 0 0 1 0 0 0 1")
+        set_fc_property(obj, "App::PropertyString", "modelCenteredAtOrigin", "The object's center", elm)
+        set_fc_property(obj, "App::PropertyBool", "backFaceShown", "Whether the object's back face is shown", elm, default_value=False)
+        set_fc_property(obj, "App::PropertyString", "modelFlags", "The object's flags", elm)
+        set_fc_property(obj, "App::PropertyInteger", "modelSize", "The object's size", elm)
+        set_fc_property(obj, "App::PropertyBool", "doorOrWindow", "Whether the object is a door or Window", elm, default_value=False)
+        set_fc_property(obj, "App::PropertyBool", "resizable", "Whether the object is resizable", elm, default_value=True)
+        set_fc_property(obj, "App::PropertyBool", "deformable", "Whether the object is deformable", elm, default_value=True)
+        set_fc_property(obj, "App::PropertyBool", "texturable", "Whether the object is texturable", elm, default_value=True)
+        set_fc_property(obj, "App::PropertyString", "staircaseCutOutShape", "", elm)
+        set_fc_property(obj, "App::PropertyPercent", "shininess", "The object's shininess", elm)
+        set_fc_property(obj, "App::PropertyPercent", "valueAddedTaxPercentage", "The object's VAT percentage", elm)
+        set_fc_property(obj, "App::PropertyString", "currency", "The object's price currency", str(elm.get('currency', 'EUR')))
 
     def set_piece_of_furniture_horizontal_rotation_properties(self, obj, elm):
-        self.setp(obj, "App::PropertyBool", "horizontallyRotatable", "Whether the object horizontally rotatable", elm)
-        self.setp(obj, "App::PropertyFloat", "pitch", "The object's pitch", elm)
-        self.setp(obj, "App::PropertyFloat", "roll", "The object's roll", elm)
-        self.setp(obj, "App::PropertyFloat", "widthInPlan", "The object's width in the plan view", elm)
-        self.setp(obj, "App::PropertyFloat", "depthInPlan", "The object's depth in the plan view", elm)
-        self.setp(obj, "App::PropertyFloat", "heightInPlan", "The object's height in the plan view", elm)
+        set_fc_property(obj, "App::PropertyBool", "horizontallyRotatable", "Whether the object horizontally rotatable", elm, default_value=True)
+        set_fc_property(obj, "App::PropertyAngle", "pitch", "The object's pitch", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyAngle", "roll", "The object's roll", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyLength", "widthInPlan", "The object's width in the plan view", elm)
+        set_fc_property(obj, "App::PropertyLength", "depthInPlan", "The object's depth in the plan view", elm)
+        set_fc_property(obj, "App::PropertyLength", "heightInPlan", "The object's height in the plan view", elm)
 
     def _get_mesh(self, elm):
         model = elm.get('model')
-        if model not in self.importer.zip.namelist():
-            raise ValueError(f"Invalid SweetHome3D file: missing model {model} for furniture {elm.get('id')}")
-        model_path_obj = None
-        try:
-            # Since mesh.read(model_data) does not work on BytesIO extract it first
-            tmp_dir = App.ActiveDocument.TransientDir
-            if os.path.isdir(os.path.join(tmp_dir, model)):
-                tmp_dir = os.path.join(tmp_dir, str(uuid.uuid4()))
-            model_path = self.importer.zip.extract(member=model, path=tmp_dir)
-            model_path_obj = model_path+".obj"
-            os.rename(model_path, model_path_obj)
-            mesh = Mesh.Mesh()
-            mesh.read(model_path_obj)
-        finally:
-            os.remove(model_path_obj)
+        model_path = os.path.join(str(self.importer.tmp_dir), model)
+        model_path_obj = os.path.join(str(self.importer.tmp_dir), f"{model}.obj")
+        if not model_path.endswith('.obj'):
+            if os.path.isfile(model_path):
+                os.rename(model_path, model_path_obj)
+                model_path = model_path_obj
+            elif os.path.isfile(model_path_obj):
+                model_path = model_path_obj
+        if not os.path.isfile(model_path):
+            raise ValueError(f"Invalid SweetHome3D file: missing model {model} for furniture {elm.get('id')}: No such file {model_path}")
+        mesh = Mesh.Mesh()
+        mesh.read(model_path)
         return mesh
 
 
@@ -1932,20 +1863,21 @@ class DoorOrWindowHandler(BaseFurnitureHandler):
         self._set_properties(feature, elm)
         self.set_furniture_common_properties(feature, elm)
         self.set_piece_of_furniture_common_properties(feature, elm)
-        self.setp(feature, "App::PropertyString", "id", "The furniture's id", door_id)
+        set_fc_property(feature, "App::PropertyString", "id", "The furniture's id", door_id)
+        set_fc_property(feature, "App::PropertyString", "ReferenceFloorName", "The Name of the Arch.Floor this walls belongs to", floor.Name)
 
     def _set_properties(self, obj, elm):
-        self.setp(obj, "App::PropertyString", "shType", "The element type", 'doorOrWindow')
-        self.setp(obj, "App::PropertyFloat", "wallThickness", "", float(elm.get('wallThickness', 1)))
-        self.setp(obj, "App::PropertyFloat", "wallDistance", "", elm)
-        self.setp(obj, "App::PropertyFloat", "wallWidth", "", float(elm.get('wallWidth', 1)))
-        self.setp(obj, "App::PropertyFloat", "wallLeft", "", elm)
-        self.setp(obj, "App::PropertyFloat", "wallHeight", "", float(elm.get('wallHeight', 1)))
-        self.setp(obj, "App::PropertyFloat", "wallTop", "", elm)
-        self.setp(obj, "App::PropertyBool", "wallCutOutOnBothSides", "", elm)
-        self.setp(obj, "App::PropertyBool", "widthDepthDeformable", "", elm)
-        self.setp(obj, "App::PropertyString", "cutOutShape", "", elm)
-        self.setp(obj, "App::PropertyBool", "boundToWall", "", elm)
+        set_fc_property(obj, "App::PropertyString", "shType", "The element type", 'doorOrWindow')
+        set_fc_property(obj, "App::PropertyLength", "wallThickness", "", elm, default_value=1.0)
+        set_fc_property(obj, "App::PropertyLength", "wallDistance", "", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyLength", "wallWidth", "", elm, default_value=1.0)
+        set_fc_property(obj, "App::PropertyFloat", "wallLeft", "", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyFloat", "wallHeight", "", elm, default_value=1.0)
+        set_fc_property(obj, "App::PropertyFloat", "wallTop", "", elm, default_value=0.0)
+        set_fc_property(obj, "App::PropertyBool", "wallCutOutOnBothSides", "", elm, default_value=False)
+        set_fc_property(obj, "App::PropertyBool", "widthDepthDeformable", "", elm, default_value=True)
+        set_fc_property(obj, "App::PropertyString", "cutOutShape", "", elm)
+        set_fc_property(obj, "App::PropertyBool", "boundToWall", "", elm, default_value=True)
 
     def _create_door(self, floor, elm):
         # The window in SweetHome3D is defined with a width, depth, height.
@@ -2080,25 +2012,23 @@ class FurnitureHandler(BaseFurnitureHandler):
         if not feature:
             feature = self._create_equipment(floor, elm)
 
-        color = elm.get('color', self.importer.preferences["DEFAULT_FLOOR_COLOR"])
+        color = color_sh2fc(elm.get('color', self.importer.preferences["DEFAULT_FURNITURE_COLOR"]))
         set_color_and_transparency(feature, color)
 
-        self.setp(feature, "App::PropertyString", "shType", "The element type", 'pieceOfFurniture')
+        set_fc_property(feature, "App::PropertyString", "shType", "The element type", 'pieceOfFurniture')
         self.set_furniture_common_properties(feature, elm)
         self.set_piece_of_furniture_common_properties(feature, elm)
         self.set_piece_of_furniture_horizontal_rotation_properties(feature, elm)
-        self.setp(feature, "App::PropertyString", "id", "The furniture's id", furniture_id)
+        set_fc_property(feature, "App::PropertyString", "id", "The furniture's id", furniture_id)
+        set_fc_property(feature, "App::PropertyString", "ReferenceFloorName", "The Name of the Arch.Floor this walls belongs to", floor.Name)
 
         if 'FurnitureGroupName' not in floor.PropertiesList:
             group = floor.newObject("App::DocumentObjectGroup", "Furnitures")
-            self.setp(floor, "App::PropertyString", "FurnitureGroupName", "The DocumentObjectGroup name for all furnitures on this floor", group.Name)
+            set_fc_property(floor, "App::PropertyString", "FurnitureGroupName", "The DocumentObjectGroup name for all furnitures on this floor", group.Name)
 
-        if self.importer.preferences["CREATE_ARCH_EQUIPMENT"]:
-            p = feature.Shape.BoundBox.Center
-        else:
-            p = feature.Mesh.BoundBox.Center
-
-        space = self.get_space(floor, p)
+        geometry = feature.getPropertyOfGeometry()
+        center = geometry.BoundBox.Center
+        space = self.get_space(floor, center)
         if space:
             space.Group = space.Group + [feature]
         else:
@@ -2186,7 +2116,7 @@ class LightHandler(FurnitureHandler):
             super().process(i, elm)
             light_apppliance = self.get_fc_object(light_id, 'pieceOfFurniture')
             assert light_apppliance != None, f"Missing <light> furniture {light_id} ..."
-            self.setp(light_apppliance, "App::PropertyFloat", "power", "The power of the light",  float(elm.get('power', 0.5)))
+            set_fc_property(light_apppliance, "App::PropertyFloat", "power", "The power of the light",  elm, default_value=0.5)
 
         # Import the lightSource sub-elments
         for j, sub_elm in enumerate(elm.findall('lightSource')):
@@ -2209,9 +2139,9 @@ class LightHandler(FurnitureHandler):
             light_source.Radius = dim_sh2fc(diameter / 2)
             light_source.Color = hex2rgb(color)
 
-            self.setp(light_source, "App::PropertyString", "shType", "The element type", 'lightSource')
-            self.setp(light_source, "App::PropertyString", "id", "The elment's id", light_source_id)
-            self.setp(light_source, "App::PropertyLink", "lightAppliance", "The furniture", light_apppliance)
+            set_fc_property(light_source, "App::PropertyString", "shType", "The element type", 'lightSource')
+            set_fc_property(light_source, "App::PropertyString", "id", "The elment's id", light_source_id)
+            set_fc_property(light_source, "App::PropertyLink", "lightAppliance", "The furniture", light_apppliance)
 
             App.ActiveDocument.Lights.addObject(light_source)
 
@@ -2267,82 +2197,30 @@ class CameraHandler(BaseHandler):
         self._set_properties(camera, elm)
 
     def _set_properties(self, obj, elm):
-        self.setp(obj, "App::PropertyString", "shType", "The element type", 'camera')
-        self.setp(obj, "App::PropertyString", "id", "The object ID", elm)
-        self.setp(obj, "App::PropertyEnumeration", "attribute", "The type of camera", elm.get('attribute'), valid_values=["topCamera", "observerCamera", "storedCamera", "cameraPath"])
-        self.setp(obj, "App::PropertyBool", "fixedSize", "Whether the object is fixed size", bool(elm.get('fixedSize', False)))
-        self.setp(obj, "App::PropertyEnumeration", "lens", "The object's lens (PINHOLE | NORMAL | FISHEYE | SPHERICAL)", str(elm.get('lens', "PINHOLE")), valid_values=["PINHOLE", "NORMAL", "FISHEYE", "SPHERICAL"])
-        self.setp(obj, "App::PropertyFloat", "yaw", "The object's yaw", elm)
-        self.setp(obj, "App::PropertyFloat", "pitch", "The object's pitch", elm)
-        self.setp(obj, "App::PropertyFloat", "time", "Unknown", elm)
-        self.setp(obj, "App::PropertyFloat", "fieldOfView", "The object's FOV", elm)
-        self.setp(obj, "App::PropertyString", "renderer", "The object's renderer", elm)
-
-
-def dim_sh2fc(dimension):
-    """Convert SweetHome dimension (cm) to FreeCAD dimension (mm)
-
-    Args:
-        dimension (float): The dimension in SweetHome
-
-    Returns:
-        float: the FreeCAD dimension
-    """
-    return float(dimension)*FACTOR
-
-
-def dim_fc2sh(dimension):
-    """Convert FreeCAD dimension (mm) to SweetHome dimension (cm)
-
-    Args:
-        dimension (float): The dimension in FreeCAD
-
-    Returns:
-        float: the SweetHome dimension
-    """
-    return float(dimension)/FACTOR
-
-
-def coord_sh2fc(vector):
-    """Converts SweetHome to FreeCAD coordinate
-
-    Args:
-        FreeCAD.Vector (FreeCAD.Vector): The coordinate in SweetHome
-
-    Returns:
-        FreeCAD.Vector: the FreeCAD coordinate
-    """
-    return App.Vector(vector.x*FACTOR, -vector.y*FACTOR, vector.z*FACTOR)
-
-
-def ang_sh2fc(angle:float):
-    """Convert SweetHome angle (º) to FreeCAD angle (º)
-
-    SweetHome angles are clockwise positive while FreeCAD are anti-clockwise
-    positive
-
-    Args:
-        angle (float): The angle in SweetHome
-
-    Returns:
-        float: the FreeCAD angle
-    """
-    return -float(angle)
+        set_fc_property(obj, "App::PropertyString", "shType", "The element type", 'camera')
+        set_fc_property(obj, "App::PropertyString", "id", "The object ID", elm)
+        set_fc_property(obj, "App::PropertyEnumeration", "attribute", "The type of camera", elm.get('attribute'), valid_values=["topCamera", "observerCamera", "storedCamera", "cameraPath"])
+        set_fc_property(obj, "App::PropertyBool", "fixedSize", "Whether the object is fixed size", elm, default_value=False)
+        set_fc_property(obj, "App::PropertyEnumeration", "lens", "The object's lens (PINHOLE | NORMAL | FISHEYE | SPHERICAL)", elm, default_value="PINHOLE", valid_values=["PINHOLE", "NORMAL", "FISHEYE", "SPHERICAL"])
+        set_fc_property(obj, "App::PropertyAngle", "yaw", "The object's yaw", elm)
+        set_fc_property(obj, "App::PropertyAngle", "pitch", "The object's pitch", elm)
+        set_fc_property(obj, "App::PropertyFloat", "time", "Unknown", elm)
+        # XXX: Should it be PropertyAngle?
+        set_fc_property(obj, "App::PropertyFloat", "fieldOfView", "The object's FOV", elm)
+        set_fc_property(obj, "App::PropertyString", "renderer", "The object's renderer", elm)
 
 
 def set_color_and_transparency(obj, color):
     if not App.GuiUp or not color:
         return
+    if not isinstance(color, list) and not isinstance(color, tuple):
+        assert False, "Invalid type when calling set_color_and_transparency(), was expecting a list or tuple. Got "+str(color)
     if hasattr(obj.ViewObject, "ShapeColor"):
-        obj.ViewObject.ShapeColor = hex2rgb(color)
-    if hasattr(obj.ViewObject, "Transparency"):
-        obj.ViewObject.Transparency = _hex2transparency(color)
-
-
-def color_fc2sh(hexcode):
-    # 0xRRGGBBAA => AARRGGBB
-    hex_str = hex(int(hexcode))[2:]
-    return ''.join([hex_str[6:], hex_str[0:6]])
+        obj.ViewObject.ShapeColor = color
+    if hasattr(obj.ViewObject, "Transparency") and len(color) == 4:
+        # color[3] denote the alpha channel. 0 is fully transparent, 1 is fully opaque
+        obj.ViewObject.Transparency = int(100 - 100 * color[3]) % 100
+        # _msg(f"Transparency={color[3]} -> {obj.ViewObject.Transparency}")
 
 
 def hex2rgb(hexcode):
@@ -2359,10 +2237,10 @@ def hex2rgb(hexcode):
         )
 
 
-def _hex2transparency(hexcode):
-    if not isinstance(hexcode, str):
-        assert False, "Invalid type when calling _hex2transparency(), was expecting a list, tuple or string. Got "+str(hexcode)
-    return 100 - int(int(hexcode[0:2], 16) * 100 / 255)
+# def _hex2transparency(hexcode):
+#     if not isinstance(hexcode, str):
+#         assert False, "Invalid type when calling _hex2transparency(), was expecting a list, tuple or string. Got "+str(hexcode)
+#     return 100 - int(int(hexcode[0:2], 16) * 100 / 255)
 
 
 def _color_section(section):
@@ -2388,8 +2266,3 @@ def set_shininess(obj, shininess):
         mat = obj.ViewObject.ShapeAppearance[0]
         mat.Shininess = float(shininess)/100
         obj.ViewObject.ShapeAppearance = mat
-
-
-def percent_sh2fc(percent):
-    # percent goes from 0 -> 1 in SH3d and 0 -> 100 in FC
-    return int(float(percent)*100)
