@@ -75,6 +75,7 @@ except :
 
 # SweetHome3D is in cm while FreeCAD is in mm
 DEFAULT_WALL_WIDTH = 100
+DEFAULT_FACEBINDER_WIDTH = 5
 DEFAULT_MATERIAL = App.Material(
     DiffuseColor=(1.00,0.00,0.00),
     AmbientColor=(0.33,0.33,0.33),
@@ -1924,7 +1925,7 @@ class WallHandler(BaseHandler):
 
             if not facebinder:
                 facebinder = Draft.make_facebinder(( wall, (face_name, ) ))
-                facebinder.Extrusion = 1
+                facebinder.Extrusion = DEFAULT_FACEBINDER_WIDTH
                 facebinder.Label = wall.Label + f" {side} side finish"
 
             set_color_and_transparency(facebinder, getattr(wall, f"{side}SideColor"))
