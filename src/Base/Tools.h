@@ -27,16 +27,23 @@
 #ifndef FC_GLOBAL_H
 #include <FCGlobal.h>
 #endif
-#include <functional>
-#include <algorithm>
 #include <cmath>
-#include <iostream>
-#include <vector>
+#include <ostream>
 #include <string>
-#include <boost_signals2.hpp>
-#include <QString>
+#include <vector>
 
-// ----------------------------------------------------------------------------
+#include <boost/signals2/shared_connection_block.hpp>
+
+namespace boost
+{
+namespace signals2
+{
+class connection;
+}
+}  // namespace boost
+
+
+class QString;
 
 namespace Base
 {

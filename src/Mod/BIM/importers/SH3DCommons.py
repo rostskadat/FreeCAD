@@ -28,6 +28,7 @@ from draftutils.messages import _wrn, _msg, _log
 # SweetHome3D is in cm while FreeCAD is in mm
 FACTOR = 10
 TOLERANCE = float(.1)
+TWO_PI = 2* math.pi
 
 def ang_sh2fc(angle:float):
     """Convert SweetHome angle (º) to FreeCAD angle (º)
@@ -43,6 +44,28 @@ def ang_sh2fc(angle:float):
     """
     return -float(angle)
 
+def norm_deg_ang(angle:float):
+    """Normalize a radian angle into a degree angle..
+
+    Args:
+        angle (float): The angle in radian
+
+    Returns:
+        float: a normalized angle
+    """
+    return round(math.degrees(float(angle)) % 360)
+
+
+def norm_rad_ang(angle:float):
+    """Normalize a radian angle into a radian angle..
+
+    Args:
+        angle (float): The angle in radian
+
+    Returns:
+        float: a normalized angle
+    """
+    return (float(angle) % TWO_PI + TWO_PI) % TWO_PI
 
 def coord_fc2sh(vector):
     """Converts FreeCAD coordinate to SweetHome coordinate.
@@ -162,6 +185,11 @@ def percent_fc2sh(percent):
 def percent_sh2fc(percent):
     # percent goes from 0 -> 1 in SH3d and 0 -> 100 in FC
     return int(float(percent)*100)
+
+def set_fc_type_id(obj, sh_type, id):
+    set_fc_property(obj, "App::PropertyString", "shType", "The element type", sh_type)
+    set_fc_property(obj, "App::PropertyString", "id", "The ground's id", id)
+
 
 def set_fc_property(obj, property_type:str, name:str, description:str, value, default_value=None, valid_values=None, group="SweetHome3D"):
     """Set the attribute of the given object as an FC property
