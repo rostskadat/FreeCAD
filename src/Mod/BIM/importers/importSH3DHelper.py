@@ -41,7 +41,7 @@ import MeshPart
 import Part
 import TechDraw
 
-from BIM.importers.SH3DCommons import ang_sh2fc, coord_sh2fc, dim_fc2sh, dim_sh2fc, color_fc2sh, color_sh2fc, set_fc_property, set_fc_type_id, norm_deg_ang, norm_rad_ang
+from BIM.importers.SH3DCommons import ang_sh2fc, coord_sh2fc, dim_fc2sh, dim_sh2fc, color_fc2sh, color_sh2fc, set_fc_property, set_fc_type_id, norm_deg_ang, norm_rad_ang, convex_hull, color_edges
 from draftutils.messages import _err, _log, _msg, _wrn
 from draftutils.params import get_param_arch
 
@@ -56,9 +56,7 @@ else:
         return text
     # \endcond
 
-# Used to make section edges more visible (https://coolors.co/5bc0eb-fde74c-9bc53d-e55934-fa7921)
-DEBUG_EDGES_COLORS = ["5bc0eb", "fde74c", "9bc53d", "e55934", "fa7921"]
-DEBUG_POINT_COLORS = ["011627", "ff0022", "41ead4", "fdfffc", "b91372"]
+# Used to make edges more visible (https://coolors.co/5bc0eb-fde74c-9bc53d-e55934-fa7921)
 RED = (255,0,0,1)
 GREEN = (0,255,0,1)
 BLUE = (0,0,255,1)
@@ -74,17 +72,7 @@ except :
     RENDER_IS_AVAILABLE = False
 
 # SweetHome3D is in cm while FreeCAD is in mm
-DEFAULT_WALL_WIDTH = 100
 DEFAULT_FACEBINDER_WIDTH = 5
-DEFAULT_MATERIAL = App.Material(
-    DiffuseColor=(1.00,0.00,0.00),
-    AmbientColor=(0.33,0.33,0.33),
-    SpecularColor=(0.53,0.53,0.53),
-    EmissiveColor=(0.00,0.00,0.00),
-    Shininess=(0.90),
-    Transparency=(0.00)
-    )
-
 ORIGIN = App.Vector(0, 0, 0)
 X_NORM = App.Vector(1, 0, 0)
 Y_NORM = App.Vector(0, 1, 0)
@@ -898,7 +886,7 @@ class BaseHandler:
             elif side < 0:
                 right_face_name = f"Face{i+1}"
                 right_face = face
-            if left_face_name and right_face_name:
+            if left_face and right_face:
                 # Optimization. Is it always true?
                 break
         return (left_face_name, left_face, right_face_name, right_face)
@@ -1729,7 +1717,7 @@ class WallHandler(BaseHandler):
 
         section.recompute()
         if debug_geometry:
-            _color_section(section)
+            color_edges(section)
 
         return section
 
@@ -2655,13 +2643,11 @@ class LightHandler(FurnitureHandler):
             x = float(sub_elm.get('x'))
             y = float(sub_elm.get('y'))
             z = float(sub_elm.get('z'))
-            diameter = float(sub_elm.get('diameter'))
-            color = sub_elm.get('color')
 
             light_source.Label = elm.get('name')
             light_source.Placement.Base = coord_sh2fc(App.Vector(x, y, z))
-            light_source.Radius = dim_sh2fc(diameter / 2)
-            light_source.Color = hex2rgb(color)
+            light_source.Radius = dim_sh2fc(float(sub_elm.get('diameter')) / 2)
+            light_source.Color = color_sh2fc(sub_elm.get('color'))
 
         set_fc_type_id(light_source, 'lightSource', light_source_id)
         if self.importer.preferences["IMPORT_FURNITURES"]:
@@ -2746,34 +2732,6 @@ def set_color_and_transparency(obj, color):
         obj.ViewObject.Transparency = int(100 - 100 * color[3]) % 100
         # _msg(f"Transparency={color[3]} -> {obj.ViewObject.Transparency}")
 
-
-def hex2rgb(hexcode):
-    # We might have transparency as the first 2 digit
-    if isinstance(hexcode, list) or isinstance(hexcode, tuple):
-        return hexcode
-    if not isinstance(hexcode, str):
-        assert False, "Invalid type when calling hex2rgb(), was expecting a list, tuple or string. Got "+str(hexcode)
-    offset = 0 if len(hexcode) == 6 else 2
-    return (
-        int(hexcode[offset:offset+2], 16),   # Red
-        int(hexcode[offset+2:offset+4], 16), # Green
-        int(hexcode[offset+4:offset+6], 16)  # Blue
-        )
-
-
-def _color_section(section):
-    view = section.ViewObject
-    line_colors = [view.LineColor] * len(section.Shape.Edges)
-    for i in range(0, len(line_colors)):
-        line_colors[i] = hex2rgb(DEBUG_EDGES_COLORS[i%len(DEBUG_EDGES_COLORS)])
-    view.LineColorArray = line_colors
-    point_colors = [view.PointColor] * len(section.Shape.Vertexes)
-    for i in range(0, len(point_colors)):
-        point_colors[i] = hex2rgb(DEBUG_POINT_COLORS[i%len(DEBUG_POINT_COLORS)])
-    view.PointColorArray = point_colors
-    view.PointSize = 5
-
-
 def set_shininess(obj, shininess):
     # TODO: it seems a shininess of 0 means the wall looses its
     # color. We'll leave it at the default setting until a later time
@@ -2783,39 +2741,3 @@ def set_shininess(obj, shininess):
         mat = obj.ViewObject.ShapeAppearance[0]
         mat.Shininess = float(shininess)/100
         obj.ViewObject.ShapeAppearance = mat
-
-
-def convex_hull(points, tol=1e-6):
-    """Return the convex hull of a series of Point
-
-    Computes the convex hull using Andrew's monotone chain algorithm (NumPy version).
-
-    Args:
-        points (list): the list of point for which to find the convex hull
-
-    Returns:
-        list: the point forming the convex hull
-    """
-    default_z = points[0].z
-    point_coords = np.array([[p.x, p.y] for p in points], dtype=np.float64)
-    point_coords = point_coords[np.lexsort((point_coords[:, 1], point_coords[:, 0]))]  # Sort by x, then y
-
-    def build_half_hull(sorted_points):
-        hull = []
-        for p in sorted_points:
-            while len(hull) >= 2 and _cross_product(hull[-2], hull[-1], p) <= tol:
-                hull.pop()
-            hull.append(tuple(p))
-        return hull
-
-    lower = build_half_hull(point_coords)
-    upper = build_half_hull(point_coords[::-1])
-
-    # Remove duplicates
-    new_points = [App.Vector(p[0], p[1], default_z) for p in np.array(lower[:-1] + upper[:-1])]
-    return new_points
-
-def _cross_product(o, a, b):
-    """Computes the cross product of vectors OA and OB."""
-    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
-
