@@ -21,6 +21,7 @@
 """Helper functions that are used by SH3D importer/exporter."""
 import FreeCAD as App
 import math
+import numpy as np
 import xml.etree.ElementTree as ET
 
 from draftutils.messages import _wrn, _msg, _log
@@ -29,6 +30,9 @@ from draftutils.messages import _wrn, _msg, _log
 FACTOR = 10
 TOLERANCE = float(.1)
 TWO_PI = 2* math.pi
+DEBUG_EDGES_COLORS = ["5bc0eb", "fde74c", "9bc53d", "e55934", "fa7921"]
+DEBUG_POINT_COLORS = ["011627", "ff0022", "41ead4", "fdfffc", "b91372"]
+
 
 def ang_sh2fc(angle:float):
     """Convert SweetHome angle (º) to FreeCAD angle (º)
@@ -253,7 +257,7 @@ def set_sh_attribute(attributes, obj, property, value=None):
     """
     property_type = get_fc_property_type(obj, property)
     if not value and property in obj.PropertiesList:
-        # Not value was passed, we use the value from the SweetHome3D group
+        # Unless value was passed, we use the value from the SweetHome3D group
         value = get_fc_property(obj, property, value)
 
     if property_type == "App::PropertyString":
@@ -321,6 +325,53 @@ def _add_fc_property(obj, property_type, name, description, group="SweetHome3D")
     """
     if name not in obj.PropertiesList:
         obj.addProperty(property_type, name, group, description)
+
+def convex_hull(points, tol=1e-6):
+    """Return the convex hull of a series of Point
+
+    Computes the convex hull using Andrew's monotone chain algorithm (NumPy version).
+
+    Args:
+        points (list): the list of point for which to find the convex hull
+
+    Returns:
+        list: the point forming the convex hull
+    """
+    default_z = points[0].z
+    point_coords = np.array([[p.x, p.y] for p in points], dtype=np.float64)
+    point_coords = point_coords[np.lexsort((point_coords[:, 1], point_coords[:, 0]))]  # Sort by x, then y
+
+    def build_half_hull(sorted_points):
+        hull = []
+        for p in sorted_points:
+            while len(hull) >= 2 and _cross_product(hull[-2], hull[-1], p) <= tol:
+                hull.pop()
+            hull.append(tuple(p))
+        return hull
+
+    lower = build_half_hull(point_coords)
+    upper = build_half_hull(point_coords[::-1])
+
+    # Remove duplicates
+    new_points = [App.Vector(p[0], p[1], default_z) for p in np.array(lower[:-1] + upper[:-1])]
+    return new_points
+
+def _cross_product(o, a, b):
+    """Computes the cross product of vectors OA and OB."""
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+def color_edges(feature):
+    view = feature.ViewObject
+    line_colors = [view.LineColor] * len(feature.Shape.Edges)
+    for i in range(0, len(line_colors)):
+        line_colors[i] = hex2rgb(DEBUG_EDGES_COLORS[i % len(DEBUG_EDGES_COLORS)])
+    view.LineColorArray = line_colors
+    point_colors = [view.PointColor] * len(feature.Shape.Vertexes)
+    for i in range(0, len(point_colors)):
+        point_colors[i] = hex2rgb(DEBUG_POINT_COLORS[i % len(DEBUG_POINT_COLORS)])
+    view.PointColorArray = point_colors
+    view.PointSize = 5
+
 
 
 __all__ = ["ang_sh2fc", "coord_fc2sh", "coord_sh2fc", "dim_fc2sh", "dim_sh2fc", "hash_vector", "set_fc_property"]
