@@ -271,9 +271,9 @@ def set_sh_attribute(attributes, obj, property, value=None):
     elif property_type == "App::PropertyBool":
         value = "true" if value else "false"
     elif property_type == "App::PropertyLength":
-        value = value.Value
+        value = value.Value if hasattr(value, 'Value') else float(value)
     elif property_type == "App::PropertyAngle":
-        value = math.radians(value.Value)
+        value = math.radians(value.Value if hasattr(value, 'Value') else float(value))
     elif property_type == "App::PropertyColor":
         value = color_fc2sh(value)
     else:
